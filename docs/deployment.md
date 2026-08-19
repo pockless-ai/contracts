@@ -26,19 +26,67 @@ Profiles are fixed:
 - `testnet`: Base Sepolia (84532) and Solana devnet. Set
   `BASE_SEPOLIA_USDC_ADDRESS`; the CLI will not guess or accept a zero address.
 - `mainnet`: Ethereum, Base, Arbitrum, Optimism, Polygon, BNB, and Solana mainnet-beta.
-  Canonical USDC addresses/mints are checked into the CLI configuration.
+  The CLI source contains the official USDC address or mint for every supported chain, so
+  mainnet USDC values are not supplied through `.env`. Preflight validates them on-chain.
 
-Create an encrypted Foundry signer:
+### Environment variables
+
+- `*_RPC_URL`: JSON-RPC endpoint for each target chain. Testnet requires
+  `BASE_SEPOLIA_RPC_URL` and `SOLANA_DEVNET_RPC_URL`; mainnet requires all listed mainnet
+  endpoints.
+- `BASE_SEPOLIA_USDC_ADDRESS`: official Base Sepolia USDC contract published by Circle:
+  `0x036CbD53842c5426634e7929541eC2318f3dCF7e`. Confirm it in
+  [Circle's registry](https://developers.circle.com/stablecoins/usdc-contract-addresses).
+- `EVM_FOUNDRY_ACCOUNT`: encrypted Foundry keystore account name.
+- `EVM_DEPLOYER_ADDRESS`: public address belonging to that Foundry account.
+- `ETHERSCAN_API_KEY`: Etherscan V2 key for explorer source verification.
+- `SOLANA_FEE_PAYER_KEYPAIR`: absolute path to the funded deployment fee-payer JSON.
+- `SOLANA_UPGRADE_AUTHORITY_KEYPAIR`: absolute path to the authority JSON retained until
+  mainnet immutability is explicitly finalized.
+- `SOLANA_PROGRAM_KEYPAIR`: absolute path to the deterministic program-ID keypair JSON.
+- `SOLANA_VERIFY_REPOSITORY_URL`: public source repository used by `solana-verify`.
+- Other `SOLANA_VERIFY_*` values control verification polling and the conservative authority
+  balance; their checked-in defaults normally need no changes.
+
+Keypair variables contain file paths, never private keys or recovery phrases.
+
+Configure an encrypted Foundry signer using one option.
+
+**Create a dedicated wallet (recommended):**
+
+```bash
+mkdir -p "$HOME/.foundry/keystores"
+cast wallet new "$HOME/.foundry/keystores" pockless-release
+```
+
+**Or import an existing dedicated wallet:**
 
 ```bash
 cast wallet import pockless-release --interactive
+```
+
+Enter the wallet's real private key through the hidden prompt. Do not enter random text.
+For either option:
+
+```bash
+cast wallet address --account pockless-release
 export EVM_FOUNDRY_ACCOUNT=pockless-release
 export EVM_DEPLOYER_ADDRESS=0xYourPublicAddress
 ```
 
-Foundry prompts for the keystore password. Raw private-key flags and environment variables
-are unsupported on every network. Restore the Solana fee payer, upgrade-authority, and
-deterministic program keypairs from encrypted storage only for the operation:
+Foundry stores the generated or imported signer in an encrypted keystore and prompts for a
+keystore password. Back up the encrypted keystore and password separately. Raw private-key
+flags and environment variables are unsupported on every network.
+
+To restore the same signer on another machine, securely copy its encrypted keystore into
+`$HOME/.foundry/keystores/`, set mode `600`, and use the original password. Prefer this over
+exporting the raw key. If another wallet cannot import the keystore, the last-resort command
+`cast wallet private-key --account pockless-release` prints the raw key after a password
+prompt. Run it only in a private, unrecorded local terminal and never place its output in
+chat, screenshots, `.env`, shell history, or source control.
+
+Restore the Solana fee payer, upgrade-authority, and deterministic program keypairs from
+encrypted storage only for the operation:
 
 ```bash
 chmod 600 /secure/tmp/{fee-payer,upgrade-authority,program-id}.json
@@ -46,6 +94,12 @@ export SOLANA_FEE_PAYER_KEYPAIR=/secure/tmp/fee-payer.json
 export SOLANA_UPGRADE_AUTHORITY_KEYPAIR=/secure/tmp/upgrade-authority.json
 export SOLANA_PROGRAM_KEYPAIR=/secure/tmp/program-id.json
 ```
+
+Mainnet must use production-only keypairs that are never reused from devnet. Generate them
+on a trusted encrypted machine, make encrypted offline backups of the files and recovery
+phrases before funding, and restore only temporary `chmod 600` copies for deployment. Retain
+the upgrade-authority backup until verification and the separate immutability operation are
+complete.
 
 Run a complete non-signing preflight, fund the reported public addresses manually, then
 repeat until every deficit is zero:

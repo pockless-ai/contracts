@@ -3,6 +3,7 @@ use solana_program::{
     account_info::{next_account_info, AccountInfo},
     clock::Clock,
     entrypoint::ProgramResult,
+    instruction::{AccountMeta, Instruction},
     program::{invoke, invoke_signed},
     program_error::ProgramError,
     program_pack::Pack,
@@ -10,9 +11,6 @@ use solana_program::{
     rent::Rent,
     system_instruction, system_program,
     sysvar::Sysvar,
-};
-use spl_associated_token_account::{
-    get_associated_token_address, instruction::create_associated_token_account_idempotent,
 };
 use spl_token::{
     instruction as token_instruction,
@@ -25,6 +23,9 @@ use crate::state::{
     StrategyAccount, StrategyAsset, WalletConfig, ASSET_SEED, AUTHORITY_SEED, STRATEGY_SEED,
     VAULT_SEED, WALLET_CONFIG_VERSION, WALLET_SEED,
 };
+
+const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
+    solana_program::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 
 pub fn process_instruction(
     program_id: &Pubkey,
@@ -115,7 +116,7 @@ fn init_wallet(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
         owner: *owner.key,
         usdc_mint: *usdc_mint.key,
         token_program: spl_token::id(),
-        associated_token_program: spl_associated_token_account::id(),
+        associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
         jupiter_program: *jupiter_program.key,
         authority_bump,
     }
@@ -396,7 +397,7 @@ fn execute_swap(
         asset_bump,
     )?;
 
-    let owner_usdc_expected = get_associated_token_address(owner.key, &wallet_config.usdc_mint);
+    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
     if owner_usdc.key != &owner_usdc_expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -641,7 +642,7 @@ fn withdraw_asset(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) ->
         token_program.key,
     )?;
 
-    let owner_token_expected = get_associated_token_address(owner.key, token_mint.key);
+    let owner_token_expected = associated_token_address(owner.key, token_mint.key);
     if owner_token.key != &owner_token_expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -780,6 +781,41 @@ fn cpi_jupiter<'slice, 'account>(
     Ok(())
 }
 
+fn associated_token_address(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[wallet.as_ref(), spl_token::id().as_ref(), mint.as_ref()],
+        &ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+    .0
+}
+
+fn create_associated_token_account_idempotent(
+    payer: &Pubkey,
+    wallet: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id: ASSOCIATED_TOKEN_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(*payer, true),
+            AccountMeta::new(
+                Pubkey::find_program_address(
+                    &[wallet.as_ref(), token_program.as_ref(), mint.as_ref()],
+                    &ASSOCIATED_TOKEN_PROGRAM_ID,
+                )
+                .0,
+                false,
+            ),
+            AccountMeta::new_readonly(*wallet, false),
+            AccountMeta::new_readonly(*mint, false),
+            AccountMeta::new_readonly(system_program::id(), false),
+            AccountMeta::new_readonly(*token_program, false),
+        ],
+        data: vec![1],
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ensure_vault_ata<'a>(
     payer: &AccountInfo<'a>,
@@ -790,7 +826,7 @@ fn ensure_vault_ata<'a>(
     associated_token_program: &AccountInfo<'a>,
     system_program_account: &AccountInfo<'a>,
 ) -> ProgramResult {
-    let expected = get_associated_token_address(vault_authority.key, mint.key);
+    let expected = associated_token_address(vault_authority.key, mint.key);
     if vault.key != &expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -1001,8 +1037,8 @@ fn assert_associated_token_program(
     associated_token_program: &AccountInfo,
     wallet: &WalletConfig,
 ) -> ProgramResult {
-    if associated_token_program.key != &spl_associated_token_account::id()
-        || wallet.associated_token_program != spl_associated_token_account::id()
+    if associated_token_program.key != &ASSOCIATED_TOKEN_PROGRAM_ID
+        || wallet.associated_token_program != ASSOCIATED_TOKEN_PROGRAM_ID
     {
         return Err(StrategySpendError::ProgramMismatch.into());
     }
