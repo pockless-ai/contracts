@@ -1,0 +1,16 @@
+{
+  "name": "contracts",
+  "private": true,
+  "scripts": {
+    "setup": "bash deploy/scripts/setup-tools.sh",
+    "deploy": "yarn workspace @pockless/deploy-cli deploy",
+    "immutable": "yarn workspace @pockless/deploy-cli immutable"
+  },
+  "workspaces": [
+    "sdk",
+    "deploy",
+    "recovery/cli",
+    "recovery/web"
+  ],
+  "packageManager": "yarn@4.10.3"
+}

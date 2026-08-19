@@ -1,0 +1,6 @@
+.deploy/
+.env
+*.keypair.json
+node_modules
+.yarn
+*.log

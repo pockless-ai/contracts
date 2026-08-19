@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  checksums:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Enable Corepack
+        run: corepack enable
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Solana
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Build artifacts
+        run: |
+          set -euo pipefail
+          yarn install
+          mkdir -p release
+          (cd evm && forge fmt --check && forge test -vvv && forge build)
+          tar -czf release/evm-out.tar.gz -C evm/out .
+          (cd solana && cargo fmt --all -- --check && cargo test -p strategy-spend && cargo build-sbf -- -p strategy-spend)
+          tar -czf release/strategy-spend-sbf.tar.gz -C solana/target/deploy .
+          yarn workspace @pockless/deploy-cli typecheck
+          yarn workspace @pockless/deploy-cli test
+          yarn workspace @pockless/protocol-sdk typecheck
+          tar --exclude='deploy/node_modules' --exclude='deploy/.deploy' --exclude='deploy/.env' \
+            -czf release/deployment-cli.tar.gz deploy package.json docs/deployments.json
+          (cd recovery/cli && yarn typecheck)
+          tar -czf release/recovery-cli.tar.gz recovery/cli recovery/lib sdk docs/deployments.json
+          (cd recovery/web && GITHUB_PAGES=true yarn build)
+          tar -czf release/recovery-web-dist.tar.gz -C recovery/web/dist .
+      - name: Write checksums
+        run: |
+          cd release
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/evm-out.tar.gz
+            release/strategy-spend-sbf.tar.gz
+            release/deployment-cli.tar.gz
+            release/recovery-cli.tar.gz
+            release/recovery-web-dist.tar.gz
+            release/SHA256SUMS

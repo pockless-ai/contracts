@@ -1,0 +1,23 @@
+{
+  "name": "@pockless/deploy-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pockless-deploy": "./src/index.ts"
+  },
+  "scripts": {
+    "deploy": "tsx src/index.ts deploy",
+    "immutable": "tsx src/index.ts immutable",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "dependencies": {
+    "viem": "^2.55.19"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@pockless/recovery-cli",
+  "version": "0.2.0",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "pockless-recovery": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pockless/protocol-sdk": "file:../../sdk",
+    "@solana/web3.js": "^1.98.4",
+    "viem": "^2.37.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5",
+    "typescript": "^5"
+  }
+}

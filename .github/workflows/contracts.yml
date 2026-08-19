@@ -1,0 +1,74 @@
+name: Contracts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "evm/**"
+      - "solana/**"
+      - "sdk/**"
+      - "deploy/**"
+      - "docs/**"
+      - "package.json"
+      - ".github/workflows/contracts.yml"
+  pull_request:
+    paths:
+      - "evm/**"
+      - "solana/**"
+      - "sdk/**"
+      - "deploy/**"
+      - "docs/**"
+      - "package.json"
+      - ".github/workflows/contracts.yml"
+
+jobs:
+  foundry:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Forge format
+        run: forge fmt --root . --check
+      - name: Forge build
+        run: forge build --root .
+      - name: Forge test
+        run: forge test --root . -vvv
+
+  solana:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: solana
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Solana
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Build strategy-spend
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test -p strategy-spend
+          cargo build-sbf -- -p strategy-spend
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: corepack enable
+      - run: yarn install
+      - run: yarn workspace @pockless/deploy-cli typecheck
+      - run: yarn workspace @pockless/deploy-cli test
+      - run: yarn workspace @pockless/protocol-sdk typecheck

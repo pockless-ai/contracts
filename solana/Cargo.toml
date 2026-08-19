@@ -1,0 +1,10 @@
+[workspace]
+members = ["programs/strategy-spend"]
+resolver = "2"
+
+[workspace.dependencies]
+borsh = "0.10"
+solana-program = "1.18"
+spl-associated-token-account = { version = "2", features = ["no-entrypoint"] }
+spl-token = { version = "4", features = ["no-entrypoint"] }
+thiserror = "1"

@@ -1,0 +1,24 @@
+[package]
+name = "strategy-spend"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Per-strategy session keys, USDC limits, and Jupiter vault swaps."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+borsh = { workspace = true }
+solana-program = { workspace = true }
+spl-associated-token-account = { workspace = true }
+spl-token = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+borsh = { workspace = true }
+solana-program-test = "1.18"
+solana-sdk = "1.18"
+spl-associated-token-account = { workspace = true }
+spl-token = { workspace = true }
+tokio = { version = "1.37", features = ["macros", "rt-multi-thread"] }

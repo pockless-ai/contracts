@@ -1,0 +1,76 @@
+{
+  "evm": {
+    "1": {
+      "name": "ethereum",
+      "tier": "mainnet",
+      "chainId": 1,
+      "rpc": "https://eth.llamarpc.com",
+      "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "status": "not-deployed"
+    },
+    "8453": {
+      "name": "base",
+      "tier": "mainnet",
+      "chainId": 8453,
+      "rpc": "https://mainnet.base.org",
+      "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "status": "not-deployed"
+    },
+    "42161": {
+      "name": "arbitrum",
+      "tier": "mainnet",
+      "chainId": 42161,
+      "rpc": "https://arb1.arbitrum.io/rpc",
+      "usdc": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "status": "not-deployed"
+    },
+    "10": {
+      "name": "optimism",
+      "tier": "mainnet",
+      "chainId": 10,
+      "rpc": "https://mainnet.optimism.io",
+      "usdc": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "status": "not-deployed"
+    },
+    "137": {
+      "name": "polygon",
+      "tier": "mainnet",
+      "chainId": 137,
+      "rpc": "https://polygon-rpc.com",
+      "usdc": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "status": "not-deployed"
+    },
+    "56": {
+      "name": "bnb",
+      "tier": "mainnet",
+      "chainId": 56,
+      "rpc": "https://bsc-dataseed.bnbchain.org",
+      "usdc": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "status": "not-deployed"
+    }
+  },
+  "solana": {
+    "mainnet-beta": {
+      "name": "mainnet-beta",
+      "tier": "mainnet",
+      "rpc": "https://api.mainnet-beta.solana.com",
+      "programId": "11111111111111111111111111111111",
+      "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "status": "not-deployed"
+    },
+    "devnet": {
+      "name": "devnet",
+      "tier": "testnet",
+      "rpc": "https://api.devnet.solana.com",
+      "programId": "11111111111111111111111111111111",
+      "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "status": "not-deployed"
+    }
+  }
+}
