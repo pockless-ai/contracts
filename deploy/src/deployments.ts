@@ -7,6 +7,77 @@ type Json = {
   solana: Record<string, Record<string, unknown>>
 }
 
+function releaseHistory(entry: Record<string, unknown> | undefined) {
+  return Array.isArray(entry?.releases)
+    ? [...(entry.releases as Record<string, unknown>[])]
+    : []
+}
+
+function archiveEvmRelease(
+  entry: Record<string, unknown> | undefined,
+  implementation: string,
+  supersededAt: string
+) {
+  const previous = entry?.implementation
+  const releases = releaseHistory(entry)
+  if (
+    typeof previous !== "string" ||
+    previous === implementation ||
+    previous === "0x0000000000000000000000000000000000000000"
+  ) {
+    return releases
+  }
+  if (
+    !releases.some(
+      (release) =>
+        release.implementation === previous &&
+        release.releaseCommit === entry?.releaseCommit
+    )
+  ) {
+    releases.push({
+      implementation: previous,
+      txHash: entry?.txHash,
+      codeHash: entry?.codeHash,
+      verifiedAt: entry?.verifiedAt,
+      releaseCommit: entry?.releaseCommit,
+      supersededAt,
+    })
+  }
+  return releases
+}
+
+function archiveSolanaRelease(
+  entry: Record<string, unknown> | undefined,
+  programHash: string | undefined,
+  supersededAt: string
+) {
+  const previousHash = entry?.programHash
+  const releases = releaseHistory(entry)
+  if (
+    typeof previousHash !== "string" ||
+    previousHash === programHash
+  ) {
+    return releases
+  }
+  if (
+    !releases.some(
+      (release) =>
+        release.programHash === previousHash &&
+        release.releaseCommit === entry?.releaseCommit
+    )
+  ) {
+    releases.push({
+      programId: entry?.programId,
+      programHash: previousHash,
+      verifiedAt: entry?.verifiedAt,
+      immutableAt: entry?.immutableAt,
+      releaseCommit: entry?.releaseCommit,
+      supersededAt,
+    })
+  }
+  return releases
+}
+
 const publicRpc: Record<string, string> = {
   "1": "https://eth.llamarpc.com",
   "10": "https://mainnet.optimism.io",
@@ -27,8 +98,9 @@ export async function mergeDeployments(
     const state = manifest.targets[target.key]
     if (!state || state.status !== "complete") continue
     if (target.family === "evm" && state.address) {
+      const existing = current.evm[target.key]
       current.evm[target.key] = {
-        ...(current.evm[target.key] ?? {}),
+        ...(existing ?? {}),
         name: target.name,
         tier: manifest.environment,
         chainId: target.chainId,
@@ -40,11 +112,17 @@ export async function mergeDeployments(
         codeHash: state.codeHash,
         verifiedAt: state.verifiedAt,
         releaseCommit: manifest.releaseCommit,
+        releases: archiveEvmRelease(
+          existing,
+          state.address,
+          state.verifiedAt ?? manifest.updatedAt
+        ),
       }
     }
     if (target.family === "solana" && state.programId) {
+      const existing = current.solana[target.key]
       current.solana[target.key] = {
-        ...(current.solana[target.key] ?? {}),
+        ...(existing ?? {}),
         name: target.name,
         tier: manifest.environment,
         rpc:
@@ -58,6 +136,11 @@ export async function mergeDeployments(
         verifiedAt: state.verifiedAt,
         immutableAt: state.immutableAt,
         releaseCommit: manifest.releaseCommit,
+        releases: archiveSolanaRelease(
+          existing,
+          state.programHash,
+          state.verifiedAt ?? manifest.updatedAt
+        ),
       }
     }
   }

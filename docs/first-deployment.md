@@ -185,8 +185,8 @@ Set `SOLANA_FEE_PAYER_KEYPAIR` and `SOLANA_PROGRAM_KEYPAIR` to their absolute pa
 
 ```bash
 cd solana
-cargo test -p strategy-spend
-cargo build-sbf -- -p strategy-spend
+cargo test --locked -p strategy-spend
+solana-verify build .
 cd ..
 ```
 
@@ -286,6 +286,10 @@ mainnet may not.
 
 Successful targets are merged into [`deployments.json`](./deployments.json) automatically.
 Do not hand-copy addresses from terminal output.
+
+Future releases use `yarn upgrade --environment testnet|mainnet`. EVM upgrades create a new
+implementation address and require wallet re-delegation; Solana upgrades retain the program
+ID until its upgrade authority is permanently removed.
 
 ### 5. Make Solana immutable (mainnet only)
 

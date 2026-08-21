@@ -2,7 +2,12 @@
 import { runDeploy } from "./deploy"
 import { env } from "./env"
 import { runImmutable } from "./immutable"
-import { assertInteractiveMainnet, confirmExact, mainnetPhrase } from "./safety"
+import {
+  assertInteractiveMainnet,
+  confirmExact,
+  mainnetPhrase,
+  upgradePhrase,
+} from "./safety"
 import type { Environment } from "./config"
 
 type Flags = Record<string, string | boolean>
@@ -20,7 +25,7 @@ function parse(argv: string[]) {
         "dry-run",
         "skip-tests",
         "skip-solana-verification",
-        "redeploy",
+        "force-broadcast",
         "help",
       ].includes(key)
     ) {
@@ -38,7 +43,7 @@ function parse(argv: string[]) {
     "dry-run",
     "skip-tests",
     "skip-solana-verification",
-    "redeploy",
+    "force-broadcast",
     "safety-buffer-percent",
     "help",
   ])
@@ -53,12 +58,13 @@ function usage() {
 
 Usage:
   yarn deploy --environment testnet|mainnet [--dry-run]
+  yarn upgrade --environment testnet|mainnet [--dry-run]
   yarn immutable --environment mainnet
 
 Testnet-only flags:
   --skip-tests
   --skip-solana-verification
-  --redeploy
+  --force-broadcast                Re-broadcast an incomplete recorded target
 
 Options:
   --safety-buffer-percent <integer>  Funding buffer (default 20)
@@ -68,9 +74,9 @@ Options:
 async function main() {
   const { command, flags } = parse(process.argv.slice(2))
   if (flags.help) return usage()
-  if (command !== "deploy" && command !== "immutable") {
+  if (command !== "deploy" && command !== "upgrade" && command !== "immutable") {
     usage()
-    throw new Error("command must be deploy or immutable")
+    throw new Error("command must be deploy, upgrade, or immutable")
   }
   const environment = flags.environment
   if (environment !== "testnet" && environment !== "mainnet") {
@@ -85,9 +91,16 @@ async function main() {
     await runImmutable(environment, env)
     return
   }
+  if (command === "upgrade" && flags["force-broadcast"] === true) {
+    throw new Error("upgrade does not accept --force-broadcast")
+  }
   const dryRun = flags["dry-run"] === true
   if (environment === "mainnet" && !dryRun) {
-    await confirmExact(mainnetPhrase(environment))
+    await confirmExact(
+      command === "upgrade"
+        ? upgradePhrase(environment)
+        : mainnetPhrase(environment)
+    )
   }
   const safetyBufferPercent = Number(flags["safety-buffer-percent"] ?? "20")
   if (
@@ -102,7 +115,8 @@ async function main() {
     dryRun,
     skipTests: flags["skip-tests"] === true,
     skipSolanaVerification: flags["skip-solana-verification"] === true,
-    redeploy: flags.redeploy === true,
+    operation: command,
+    forceBroadcast: flags["force-broadcast"] === true,
     safetyBufferPercent,
     source: env,
   })

@@ -44,8 +44,8 @@ forge test --root .
 
 ```bash
 cd solana
-cargo test -p strategy-spend
-cargo build-sbf -- -p strategy-spend
+cargo test --locked -p strategy-spend
+solana-verify build .
 ```
 
 ### SDK
@@ -65,10 +65,13 @@ from encrypted storage, and run:
 yarn deploy --environment testnet --dry-run
 yarn deploy --environment testnet
 yarn deploy --environment mainnet
+yarn upgrade --environment testnet --dry-run
+yarn upgrade --environment testnet
 ```
 
 Mainnet is interactive, refuses CI/non-TTY execution, and uses an encrypted Foundry account
-plus file-path Solana keypairs. It never accepts raw keys or funds deployers. After public
+plus file-path Solana keypairs. It never accepts raw keys or funds deployers. Upgrades deploy
+new immutable EVM implementations and update Solana at its existing program ID. After public
 Solana verification and a separate review, permanently remove its upgrade authority with:
 
 ```bash

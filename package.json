@@ -4,6 +4,7 @@
   "scripts": {
     "setup": "bash deploy/scripts/setup-tools.sh",
     "deploy": "yarn workspace @pockless/deploy-cli deploy",
+    "upgrade": "yarn workspace @pockless/deploy-cli upgrade",
     "immutable": "yarn workspace @pockless/deploy-cli immutable"
   },
   "workspaces": [

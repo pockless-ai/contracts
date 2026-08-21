@@ -23,6 +23,7 @@ import {
   assertInteractiveMainnet,
   immutablePhrase,
   mainnetPhrase,
+  upgradePhrase,
 } from "../src/safety"
 
 const testUsdc = "0x1111111111111111111111111111111111111111"
@@ -162,6 +163,30 @@ test("deployment merge preserves environments and adds release metadata", async 
     assert.equal(merged.evm["84532"].tier, "testnet")
     assert.equal(merged.evm["84532"].releaseCommit, "abc")
     assert.equal(merged.evm["84532"].status, "deployed")
+
+    const upgraded = newManifest("testnet", "def")
+    upgraded.targets["84532"] = {
+      family: "evm",
+      name: "base-sepolia",
+      status: "complete",
+      address: "0x2222222222222222222222222222222222222222",
+      txHash: `0x${"3".repeat(64)}`,
+      codeHash: `0x${"4".repeat(64)}`,
+      verifiedAt: "2026-08-21T00:00:00.000Z",
+    }
+    await mergeDeployments(
+      path,
+      upgraded,
+      loadTargets("testnet", { BASE_SEPOLIA_USDC_ADDRESS: testUsdc })
+    )
+    const afterUpgrade = JSON.parse(await readFile(path, "utf8"))
+    assert.equal(afterUpgrade.evm["84532"].releaseCommit, "def")
+    assert.equal(afterUpgrade.evm["84532"].releases.length, 1)
+    assert.equal(
+      afterUpgrade.evm["84532"].releases[0].implementation,
+      testUsdc
+    )
+    assert.equal(afterUpgrade.evm["84532"].releases[0].releaseCommit, "abc")
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -169,6 +194,7 @@ test("deployment merge preserves environments and adds release metadata", async 
 
 test("mainnet and immutable confirmations are exact and require TTY", () => {
   assert.equal(mainnetPhrase("mainnet"), "DEPLOY POCKLESS MAINNET")
+  assert.equal(upgradePhrase("mainnet"), "UPGRADE POCKLESS MAINNET")
   assert.equal(
     immutablePhrase("mainnet-beta", "Program111"),
     "MAKE SOLANA mainnet-beta Program111 PERMANENTLY IMMUTABLE"
@@ -198,7 +224,8 @@ test("dry-run completes injected preflight without invoking command or RPC bound
         dryRun: true,
         skipTests: false,
         skipSolanaVerification: true,
-        redeploy: false,
+        operation: "deploy",
+        forceBroadcast: false,
         safetyBufferPercent: 20,
         source: { BASE_SEPOLIA_USDC_ADDRESS: testUsdc },
       },
@@ -242,7 +269,8 @@ test("dry-run preserves a completed resumable deployment", async () => {
         dryRun: true,
         skipTests: false,
         skipSolanaVerification: true,
-        redeploy: false,
+        operation: "deploy",
+        forceBroadcast: false,
         safetyBufferPercent: 20,
         source: { BASE_SEPOLIA_USDC_ADDRESS: testUsdc },
       },
@@ -258,6 +286,59 @@ test("dry-run preserves a completed resumable deployment", async () => {
     )
     assert.equal(manifest.targets["84532"].status, "complete")
     assert.equal(manifest.targets.devnet.status, "pending")
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("upgrade advances an incomplete release without replacing unchanged completed targets", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pockless-upgrade-resume-"))
+  const manifestPath = join(directory, "testnet.json")
+  const existing = newManifest("testnet", "previous-commit")
+  existing.targets["84532"] = {
+    family: "evm",
+    name: "base-sepolia",
+    status: "complete",
+    artifactHash: "hash-84532",
+    address: testUsdc,
+    txHash: `0x${"1".repeat(64)}`,
+    codeHash: `0x${"2".repeat(64)}`,
+  }
+  existing.targets.devnet = {
+    family: "solana",
+    name: "devnet",
+    status: "failed",
+    artifactHash: "previous-solana-hash",
+    programId: "program-id",
+  }
+  await saveManifest(manifestPath, existing)
+  try {
+    const manifest = await runDeploy(
+      {
+        environment: "testnet",
+        dryRun: true,
+        skipTests: false,
+        skipSolanaVerification: true,
+        operation: "upgrade",
+        forceBroadcast: false,
+        safetyBufferPercent: 20,
+        source: { BASE_SEPOLIA_USDC_ADDRESS: testUsdc },
+      },
+      {
+        run: async () => {
+          throw new Error("command boundary must not run")
+        },
+        log: () => undefined,
+        setup: async () => ({ releaseCommit: "current-commit" }),
+        preflight: async (target) => ({ artifactHash: `hash-${target.key}` }),
+        manifestPath,
+      }
+    )
+    assert.equal(manifest.releaseCommit, "current-commit")
+    assert.equal(manifest.targets["84532"].status, "complete")
+    assert.equal(manifest.targets.devnet.status, "failed")
+    assert.equal(manifest.targets.devnet.artifactHash, "previous-solana-hash")
+    assert.equal(manifest.targets.devnet.programId, "program-id")
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

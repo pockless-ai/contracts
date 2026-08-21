@@ -61,7 +61,8 @@ export type DeployOptions = {
   dryRun: boolean
   skipTests: boolean
   skipSolanaVerification: boolean
-  redeploy: boolean
+  operation: "deploy" | "upgrade"
+  forceBroadcast: boolean
   safetyBufferPercent: number
   source: Record<string, string | undefined>
 }
@@ -185,9 +186,15 @@ async function releaseInfo(run: RunCommand, environment: Environment) {
   return commit
 }
 
-async function requireTools(run: RunCommand, includeVerify: boolean) {
-  const tools = ["git", "forge", "cargo", "solana", "solana-keygen"]
-  if (includeVerify) tools.push("solana-verify")
+async function requireTools(run: RunCommand) {
+  const tools = [
+    "git",
+    "forge",
+    "cargo",
+    "solana",
+    "solana-keygen",
+    "solana-verify",
+  ]
   const unavailable: string[] = []
   for (const tool of tools) {
     try {
@@ -328,6 +335,21 @@ function artifactBytecode(raw: unknown) {
   return artifact
 }
 
+function shouldBroadcastUpgrade(
+  options: DeployOptions,
+  existing: TargetState | undefined,
+  artifactHash: string
+) {
+  if (!existing) return true
+  if (
+    options.operation === "upgrade" &&
+    existing.artifactHash !== artifactHash
+  ) {
+    return true
+  }
+  return options.forceBroadcast && existing.status !== "complete"
+}
+
 async function preflightEvm(
   target: EvmTarget,
   options: DeployOptions,
@@ -389,12 +411,17 @@ async function preflightEvm(
   const artifact = artifactBytecode(
     JSON.parse(await readFile(artifactPath, "utf8"))
   )
+  const artifactHash = await sha256(artifactPath)
   const data = encodeDeployData({
     abi,
     bytecode: artifact.bytecode!.object!,
     args: [target.usdc],
   })
-  if (!existing?.address || !existing.txHash || options.redeploy) {
+  if (
+    !existing?.address ||
+    !existing.txHash ||
+    shouldBroadcastUpgrade(options, existing, artifactHash)
+  ) {
     const gas = await client.estimateGas({ account: sender, data })
     const gasPrice = await client.getGasPrice()
     const estimated = gas * gasPrice
@@ -419,7 +446,7 @@ async function preflightEvm(
     rpc,
     sender,
     account,
-    artifactHash: await sha256(artifactPath),
+    artifactHash,
   }
 }
 
@@ -491,7 +518,7 @@ async function preflightSolana(
       50_000_000
     )
   )
-  if (!existing?.programId || options.redeploy) {
+  if (!existing?.programId) {
     const balance = await solanaRpc<{ value: number }>(rpc, "getBalance", [
       payerPubkey,
       { commitment: "confirmed" },
@@ -521,7 +548,7 @@ async function preflightSolana(
     }
   } else {
     log(
-      `${target.name}: deployed program is already recorded; deployment funding check skipped`
+      `${target.name}: deployed program is already recorded; full initial-rent check skipped for upgrade`
     )
   }
   return {
@@ -558,16 +585,22 @@ async function deployEvm(
   onBroadcast: (state: Partial<TargetState>) => Promise<void>,
   existing?: TargetState
 ): Promise<TargetState> {
+  const shouldBroadcast = shouldBroadcastUpgrade(
+    options,
+    existing,
+    preflight.artifactHash
+  )
   if (
     existing?.artifactHash &&
-    existing.artifactHash !== preflight.artifactHash
+    existing.artifactHash !== preflight.artifactHash &&
+    !shouldBroadcast
   ) {
     throw new Error(
       `${target.name} recorded artifact does not match the current release`
     )
   }
   let deployed: { address: Address; txHash: Hex }
-  if (existing?.address && existing.txHash && !options.redeploy) {
+  if (existing?.address && existing.txHash && !shouldBroadcast) {
     deployed = {
       address: getAddress(existing.address),
       txHash: existing.txHash as Hex,
@@ -651,16 +684,27 @@ async function deploySolana(
   onBroadcast: (state: Partial<TargetState>) => Promise<void>,
   existing?: TargetState
 ): Promise<TargetState> {
+  const shouldBroadcast = shouldBroadcastUpgrade(
+    options,
+    existing,
+    preflight.artifactHash
+  )
+  if (shouldBroadcast && existing?.immutableAt) {
+    throw new Error(
+      `${target.name} is immutable and requires a new program ID for upgrades`
+    )
+  }
   if (
     existing?.artifactHash &&
-    existing.artifactHash !== preflight.artifactHash
+    existing.artifactHash !== preflight.artifactHash &&
+    !shouldBroadcast
   ) {
     throw new Error(
       `${target.name} recorded artifact does not match the current release`
     )
   }
   let parsed: { programId?: string; signature?: string }
-  if (existing?.programId && !options.redeploy) {
+  if (existing?.programId && !shouldBroadcast) {
     parsed = {
       programId: existing.programId,
       signature: existing.deploySignature,
@@ -748,10 +792,8 @@ async function deploySolana(
             repository,
             "--commit-hash",
             await releaseInfo(run, options.environment),
-            "--library-name",
-            "strategy_spend",
             "--mount-path",
-            "solana/programs/strategy-spend",
+            "solana",
           ],
           { env: environment, interactive: true }
         )
@@ -794,17 +836,22 @@ export async function runDeploy(
 ) {
   if (
     options.environment === "mainnet" &&
-    (options.skipTests || options.redeploy || options.skipSolanaVerification)
+    (options.skipTests ||
+      options.forceBroadcast ||
+      options.skipSolanaVerification)
   ) {
     throw new Error(
-      "mainnet forbids --skip-tests, --redeploy, and --skip-solana-verification"
+      "mainnet forbids --skip-tests, --force-broadcast, and --skip-solana-verification"
     )
+  }
+  if (options.operation === "upgrade" && options.forceBroadcast) {
+    throw new Error("upgrade does not accept --force-broadcast")
   }
   let commit: string
   if (dependencies.setup) {
     commit = (await dependencies.setup()).releaseCommit
   } else {
-    await requireTools(dependencies.run, !options.skipSolanaVerification)
+    await requireTools(dependencies.run)
     commit = await releaseInfo(dependencies.run, options.environment)
     if (!options.skipTests) {
       await checked(
@@ -828,14 +875,14 @@ export async function runDeploy(
       await checked(
         dependencies.run,
         "cargo",
-        ["test", "-p", "strategy-spend"],
+        ["test", "--locked", "-p", "strategy-spend"],
         { cwd: solanaRoot }
       )
       await checked(
         dependencies.run,
-        "cargo",
-        ["build-sbf", "--", "-p", "strategy-spend"],
-        { cwd: solanaRoot }
+        "solana-verify",
+        ["build", "."],
+        { cwd: solanaRoot, interactive: true }
       )
     } else {
       await access(
@@ -849,8 +896,25 @@ export async function runDeploy(
     dependencies.manifestPath ??
     join(manifestDirectory, `${options.environment}.json`)
   let manifest = await loadManifest(path)
-  if (manifest) assertResumeCompatible(manifest, options.environment, commit)
-  else manifest = newManifest(options.environment, commit)
+  let advancingRelease = false
+  if (!manifest) {
+    if (options.operation === "upgrade") {
+      throw new Error(
+        `cannot upgrade before ${options.environment} has a deployment manifest`
+      )
+    }
+    manifest = newManifest(options.environment, commit)
+  } else if (
+    options.operation === "upgrade" &&
+    manifest.releaseCommit !== commit
+  ) {
+    if (manifest.environment !== options.environment) {
+      assertResumeCompatible(manifest, options.environment, commit)
+    }
+    advancingRelease = true
+  } else {
+    assertResumeCompatible(manifest, options.environment, commit)
+  }
 
   const preflights = new Map<string, { artifactHash: string }>()
   for (const target of targets) {
@@ -874,9 +938,29 @@ export async function runDeploy(
               existing
             )
       preflights.set(target.key, preflight)
+      const artifactChanged =
+        existing?.artifactHash !== undefined &&
+        existing.artifactHash !== preflight.artifactHash
       if (
         existing?.status === "complete" &&
-        !options.redeploy &&
+        artifactChanged &&
+        options.operation !== "upgrade"
+      ) {
+        throw new Error(
+          `${target.name} completed artifact does not match the current release`
+        )
+      }
+      if (
+        target.family === "solana" &&
+        artifactChanged &&
+        existing?.immutableAt
+      ) {
+        throw new Error(
+          `${target.name} is immutable and requires a new program ID for upgrades`
+        )
+      }
+      if (
+        existing?.status === "complete" &&
         !dependencies.preflight
       ) {
         if (target.family === "evm") {
@@ -922,7 +1006,9 @@ export async function runDeploy(
           }
         }
         dependencies.log(
-          `${target.name}: completed deployment validated; skipping`
+          artifactChanged && options.operation === "upgrade"
+            ? `${target.name}: completed deployment validated; upgrade required`
+            : `${target.name}: completed deployment validated; skipping`
         )
       }
     } catch (error) {
@@ -936,10 +1022,15 @@ export async function runDeploy(
     }
   }
 
+  if (advancingRelease) {
+    manifest.releaseCommit = commit
+    await saveManifest(path, manifest)
+  }
+
   if (options.dryRun) {
     for (const target of targets) {
       const preflight = preflights.get(target.key)!
-      if (manifest.targets[target.key]?.status === "complete") continue
+      if (manifest.targets[target.key]) continue
       manifest.targets[target.key] = {
         family: target.family,
         name: target.name,
@@ -953,11 +1044,12 @@ export async function runDeploy(
 
   for (const target of targets) {
     const existing = manifest.targets[target.key]
-    if (existing?.status === "complete" && !options.redeploy) {
+    const preflight = preflights.get(target.key)!
+    if (
+      existing?.status === "complete" &&
+      !shouldBroadcastUpgrade(options, existing, preflight.artifactHash)
+    ) {
       continue
-    }
-    if (existing?.status === "complete" && options.environment === "mainnet") {
-      throw new Error(`mainnet deployment ${target.name} cannot be overwritten`)
     }
     manifest.targets[target.key] = {
       ...existing,
@@ -968,7 +1060,6 @@ export async function runDeploy(
     }
     await saveManifest(path, manifest)
     try {
-      const preflight = preflights.get(target.key)!
       const persistBroadcast = async (state: Partial<TargetState>) => {
         manifest!.targets[target.key] = {
           ...manifest!.targets[target.key],

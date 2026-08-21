@@ -116,8 +116,10 @@ with `--safety-buffer-percent`. No funding or sweeping is automated.
 
 Deploy with the same command minus `--dry-run`. Mainnet requires a clean pushed commit,
 an attached TTY, and the exact prompted phrase. `--skip-tests`,
-`--skip-solana-verification`, and `--redeploy` are testnet-only. Testnet verification may
-be left pending only with the explicit opt-out.
+`--skip-solana-verification`, and `--force-broadcast` are testnet-only.
+`--force-broadcast` is a narrow recovery option for an incomplete target whose recorded
+transaction cannot be resumed. Testnet verification may be left pending only with the
+explicit opt-out.
 
 State is atomically saved after every broadcast and failure in
 `deploy/.deploy/<environment>.json` (gitignored). Re-running validates completed on-chain
@@ -125,6 +127,24 @@ code and resumes receipt/verification work. It never silently replaces a mainnet
 Successful targets merge into `docs/deployments.json` without deleting other environments.
 Back up the completed mainnet manifest with the release records: the later immutability
 command requires it at the same path, so it must not exist only on one workstation.
+
+### Upgrades
+
+Commit and push the new release, then preflight and execute it explicitly:
+
+```bash
+yarn upgrade --environment testnet --dry-run
+yarn upgrade --environment testnet
+```
+
+`upgrade` skips unchanged artifacts. Changed EVM bytecode deploys to a new implementation
+address, so applications must update their implementation configuration and wallet owners
+must re-delegate EIP-7702. Changed Solana bytecode upgrades the existing program ID while
+its upgrade authority exists. An immutable Solana program rejects upgrades and requires a
+new program ID. Superseded public deployments remain in each target's `releases` history.
+
+Mainnet upgrades require the same clean pushed commit and verification guarantees as
+mainnet deployment, with the exact `UPGRADE POCKLESS MAINNET` confirmation phrase.
 
 ### User delegation (EIP-7702)
 
@@ -137,25 +157,27 @@ relayer may submit.
 
 ### Prerequisites
 
-- Solana CLI + `cargo-build-sbf`
+- Solana CLI, Docker, and `solana-verify`
 - Funded deployer keypair
 
 ### Build
 
 ```bash
 cd solana
-cargo build-sbf -- -p strategy-spend
+solana-verify build .
 ```
+
+The deployment CLI uses this same pinned Docker build as the deployed artifact so public
+verification reproduces the exact on-chain binary.
 
 ### Public Solana verification
 
 Set `SOLANA_VERIFY_REPOSITORY_URL` to the public repository. The CLI uses the fee payer as
 the upgrade/verification authority, creates an isolated temporary Solana CLI config, and
 runs `solana-verify verify-from-repo`
-interactively for the exact pushed commit, library `strategy_spend`, and mount path
-`solana/programs/strategy-spend`. It then submits the remote job and waits until the
-public verification API reports matching hashes. Mainnet fails if the commit is dirty,
-unpushed, or not publicly verified.
+interactively for the exact pushed commit and the `solana` workspace mount path. It then
+submits the remote job and waits until the public verification API reports matching hashes.
+Mainnet fails if the commit is dirty, unpushed, or not publicly verified.
 
 Uploading verification metadata needs a small extra SOL balance. Preflight adds that amount
 to the one deployer check. The default conservative authority minimum and verification
@@ -183,9 +205,9 @@ none`.
 5. Git tag `v*` triggers release workflow → attach `SHA256SUMS`.
 6. GitHub Pages serves recovery web from the same tag or `main`.
 
-EVM implementations have no upgrade mechanism and are already immutable. Solana authority
-is deliberately retained during deployment and can only be removed by the separate command.
-Deploy a new program ID for any future V2; an immutable V1 cannot be upgraded.
+EVM implementations have no in-place upgrade mechanism; `yarn upgrade` deploys a new
+implementation. Solana authority is deliberately retained until the separate immutability
+command. After immutability, a future Solana release requires a new program ID.
 
 ## Verification
 

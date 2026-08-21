@@ -99,10 +99,10 @@ instruction data. Compute-budget/setup/cleanup instructions are not executed thr
 
 ```bash
 cd solana
-cargo build-sbf -- -p strategy-spend
+solana-verify build .
 ```
 
-Requires Solana platform tools (`cargo-build-sbf`).
+Requires Docker and `solana-verify`.
 
 ## Recovery
 

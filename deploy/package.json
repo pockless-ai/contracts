@@ -8,6 +8,7 @@
   },
   "scripts": {
     "deploy": "tsx src/index.ts deploy",
+    "upgrade": "tsx src/index.ts upgrade",
     "immutable": "tsx src/index.ts immutable",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/**/*.test.ts"

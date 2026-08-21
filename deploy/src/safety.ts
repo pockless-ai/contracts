@@ -4,6 +4,10 @@ export function mainnetPhrase(environment: string) {
   return `DEPLOY POCKLESS ${environment.toUpperCase()}`
 }
 
+export function upgradePhrase(environment: string) {
+  return `UPGRADE POCKLESS ${environment.toUpperCase()}`
+}
+
 export function immutablePhrase(cluster: string, programId: string) {
   return `MAKE SOLANA ${cluster} ${programId} PERMANENTLY IMMUTABLE`
 }
