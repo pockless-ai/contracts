@@ -174,10 +174,11 @@ verification reproduces the exact on-chain binary.
 
 Set `SOLANA_VERIFY_REPOSITORY_URL` to the public repository. The CLI uses the fee payer as
 the upgrade/verification authority, creates an isolated temporary Solana CLI config, and
-runs `solana-verify verify-from-repo`
-interactively for the exact pushed commit and the `solana` workspace mount path. It then
-submits the remote job and waits until the public verification API reports matching hashes.
-Mainnet fails if the commit is dirty, unpushed, or not publicly verified.
+runs `solana-verify verify-from-repo` for the exact pushed commit and the `solana` workspace
+mount path. Devnet records the reproducible hash match and uploads its verification PDA.
+Mainnet additionally submits the remote job and waits until the public verification API
+reports matching hashes. Mainnet fails if the commit is dirty, unpushed, or not publicly
+verified.
 
 Uploading verification metadata needs a small extra SOL balance. Preflight adds that amount
 to the one deployer check. The default conservative authority minimum and verification

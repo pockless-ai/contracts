@@ -231,7 +231,7 @@ async function validateKeypair(
 async function withSolanaConfig<T>(
   rpc: string,
   keypair: string,
-  operation: (environment: NodeJS.ProcessEnv) => Promise<T>
+  operation: (environment: NodeJS.ProcessEnv, configPath: string) => Promise<T>
 ) {
   const directory = await mkdtemp(join(tmpdir(), "pockless-solana-config-"))
   const path = join(directory, "cli.yml")
@@ -248,7 +248,7 @@ async function withSolanaConfig<T>(
       ].join("\n"),
       { mode: 0o600 }
     )
-    return await operation({ ...process.env, SOLANA_CONFIG_FILE: path })
+    return await operation({ ...process.env, SOLANA_CONFIG_FILE: path }, path)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -779,7 +779,10 @@ async function deploySolana(
     await withSolanaConfig(
       preflight.rpc,
       preflight.authority,
-      async (environment) => {
+      async (environment, configPath) => {
+        log(
+          `${target.name}: reproducing the pushed Solana build and uploading its verification record`
+        )
         await checked(
           run,
           "solana-verify",
@@ -789,32 +792,43 @@ async function deploySolana(
             preflight.rpc,
             "--program-id",
             programId,
+            "--keypair",
+            preflight.authority,
+            "--config",
+            configPath,
+            "--skip-prompt",
             repository,
             "--commit-hash",
             await releaseInfo(run, options.environment),
             "--mount-path",
             "solana",
           ],
-          { env: environment, interactive: true }
+          { env: environment }
         )
       }
     )
-    await checked(run, "solana-verify", [
-      "remote",
-      "submit-job",
-      "--url",
-      preflight.rpc,
-      "--program-id",
-      programId,
-      "--uploader",
-      preflight.authorityPubkey,
-    ])
-    await waitForRemoteSolanaVerification(
-      programId,
-      programHash,
-      options.source,
-      log
-    )
+    if (target.cluster === "mainnet-beta") {
+      await checked(run, "solana-verify", [
+        "remote",
+        "submit-job",
+        "--url",
+        preflight.rpc,
+        "--program-id",
+        programId,
+        "--uploader",
+        preflight.authorityPubkey,
+      ])
+      await waitForRemoteSolanaVerification(
+        programId,
+        programHash,
+        options.source,
+        log
+      )
+    } else {
+      log(
+        `${target.name}: reproducible hash matched and verification record uploaded; remote verification is mainnet-only`
+      )
+    }
     verifiedAt = new Date().toISOString()
   }
   return {

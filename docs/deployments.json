@@ -9,6 +9,33 @@
       "implementation": "0x0000000000000000000000000000000000000000",
       "status": "not-deployed"
     },
+    "10": {
+      "name": "optimism",
+      "tier": "mainnet",
+      "chainId": 10,
+      "rpc": "https://mainnet.optimism.io",
+      "usdc": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "status": "not-deployed"
+    },
+    "56": {
+      "name": "bnb",
+      "tier": "mainnet",
+      "chainId": 56,
+      "rpc": "https://bsc-dataseed.bnbchain.org",
+      "usdc": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "status": "not-deployed"
+    },
+    "137": {
+      "name": "polygon",
+      "tier": "mainnet",
+      "chainId": 137,
+      "rpc": "https://polygon-rpc.com",
+      "usdc": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "status": "not-deployed"
+    },
     "8453": {
       "name": "base",
       "tier": "mainnet",
@@ -27,32 +54,19 @@
       "implementation": "0x0000000000000000000000000000000000000000",
       "status": "not-deployed"
     },
-    "10": {
-      "name": "optimism",
-      "tier": "mainnet",
-      "chainId": 10,
-      "rpc": "https://mainnet.optimism.io",
-      "usdc": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
-      "implementation": "0x0000000000000000000000000000000000000000",
-      "status": "not-deployed"
-    },
-    "137": {
-      "name": "polygon",
-      "tier": "mainnet",
-      "chainId": 137,
-      "rpc": "https://polygon-rpc.com",
-      "usdc": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-      "implementation": "0x0000000000000000000000000000000000000000",
-      "status": "not-deployed"
-    },
-    "56": {
-      "name": "bnb",
-      "tier": "mainnet",
-      "chainId": 56,
-      "rpc": "https://bsc-dataseed.bnbchain.org",
-      "usdc": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
-      "implementation": "0x0000000000000000000000000000000000000000",
-      "status": "not-deployed"
+    "84532": {
+      "name": "base-sepolia",
+      "tier": "testnet",
+      "chainId": 84532,
+      "rpc": "https://sepolia.base.org",
+      "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      "implementation": "0x92237a6819A07d9373303Ff5bb2835b9916994C4",
+      "status": "deployed",
+      "txHash": "0xd52cc6dc49c228ef449156e97e8742a5dbc4f82fbb46868599da893e24b5a389",
+      "codeHash": "0xbad1fcdc66f56f1cd43c72cca4c1d18f1f2bdc146343df76b03ebd59167d9afd",
+      "verifiedAt": "2026-08-21T17:00:45.470Z",
+      "releaseCommit": "fe028472102ac39c5eb4628c814a308ecf252bc7",
+      "releases": []
     }
   },
   "solana": {
@@ -68,9 +82,13 @@
       "name": "devnet",
       "tier": "testnet",
       "rpc": "https://api.devnet.solana.com",
-      "programId": "11111111111111111111111111111111",
+      "programId": "3yxrhjrQhqojzQ7CuzKKjiiNsTjRcoqXMJ7q694Xi5To",
       "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-      "status": "not-deployed"
+      "status": "deployed",
+      "programHash": "2403ae9d00ed3217d0a961e048e9ce26b054b54aa2b52337d5c8d087175f2a8a",
+      "verifiedAt": "2026-08-21T17:22:42.197Z",
+      "releaseCommit": "fe028472102ac39c5eb4628c814a308ecf252bc7",
+      "releases": []
     }
   }
 }
