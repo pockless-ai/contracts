@@ -27,12 +27,38 @@ withdraw recovery, and close.
 
 ---
 
-## Layer 2 — Local / testnet on-chain (manual)
+## Layer 2 — Local / testnet on-chain
 
 Use **Base Sepolia + Solana devnet** through the fixed testnet profile. Run
 `yarn deploy --environment testnet --dry-run`, fund the reported public addresses manually,
 then `yarn deploy --environment testnet`. Follow
 [`first-deployment.md`](./first-deployment.md).
+
+### Automated testnet smoke
+
+After a successful testnet deploy, run the lifecycle smoke test from
+`apps/contracts`:
+
+```bash
+yarn smoke:testnet
+```
+
+The command is opt-in (`LIVE_SMOKE=1` is set by the script). It reads RPC URLs and
+signer paths from `deploy/.env`, loads deployed addresses from
+`deploy/.deploy/testnet.json`, and exercises both chains without swaps:
+
+- **Base Sepolia** — verify implementation bytecode and USDC config, EIP-7702 delegate the
+  Foundry deployer, grant a fresh session, read `sessionOf`, revoke, then clear delegation in
+  `finally`.
+- **Solana devnet** — verify the program and upgrade authority, `InitWallet` if needed,
+  `InitStrategy`, read the strategy account, revoke, close the flat strategy.
+
+For the EVM leg, either enter the Foundry keystore password at the prompt or set
+`EVM_FOUNDRY_PASSWORD` in `deploy/.env` when Yarn/Cursor runs without a TTY. Delegation uses
+Foundry's self-broadcast flow (`cast send --auth <implementation>`) with a fixed 500k gas limit;
+the first grant combines delegation and `grant` in one type-4 transaction when needed. The
+Solana leg reuses the funded deployer keypair from `SOLANA_FEE_PAYER_KEYPAIR`. This validates
+lifecycle behavior only; it does not execute 0x or Jupiter swaps.
 
 ### EVM smoke test
 

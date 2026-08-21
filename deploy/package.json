@@ -11,9 +11,12 @@
     "upgrade": "tsx src/index.ts upgrade",
     "immutable": "tsx src/index.ts immutable",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test tests/**/*.test.ts",
+    "smoke:testnet": "LIVE_SMOKE=1 tsx --test tests/smoke/testnet-contracts.test.ts"
   },
   "dependencies": {
+    "@pockless/protocol-sdk": "workspace:*",
+    "@solana/web3.js": "^1.98.4",
     "viem": "^2.55.19"
   },
   "devDependencies": {

@@ -23,6 +23,7 @@ const SECRET_FLAGS = new Set([
   "--upgrade-authority",
   "--program-id",
   "--from",
+  "--password",
   "--etherscan-api-key",
   "--rpc-url",
   "--url",

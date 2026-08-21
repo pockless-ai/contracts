@@ -5,7 +5,8 @@
     "setup": "bash deploy/scripts/setup-tools.sh",
     "deploy": "yarn workspace @pockless/deploy-cli deploy",
     "upgrade": "yarn workspace @pockless/deploy-cli upgrade",
-    "immutable": "yarn workspace @pockless/deploy-cli immutable"
+    "immutable": "yarn workspace @pockless/deploy-cli immutable",
+    "smoke:testnet": "yarn workspace @pockless/deploy-cli smoke:testnet"
   },
   "workspaces": [
     "sdk",
