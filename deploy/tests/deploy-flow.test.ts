@@ -9,6 +9,7 @@ import {
   solanaDeployArgs,
   type RunCommand,
 } from "../src/command"
+import { resolveSolanaKeypairs } from "../src/env"
 import { loadTargets } from "../src/config"
 import { runDeploy } from "../src/deploy"
 import { mergeDeployments } from "../src/deployments"
@@ -71,6 +72,36 @@ test("manifest writes atomically, resumes, and rejects release mismatches", asyn
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test("Solana fee payer is the authority and program ID remains separate", () => {
+  assert.deepEqual(
+    resolveSolanaKeypairs({
+      SOLANA_FEE_PAYER_KEYPAIR: "/secure/fee-payer.json",
+      SOLANA_PROGRAM_KEYPAIR: "/secure/program.json",
+    }),
+    {
+      feePayer: "/secure/fee-payer.json",
+      authority: "/secure/fee-payer.json",
+      programKeypair: "/secure/program.json",
+    }
+  )
+  assert.throws(
+    () =>
+      resolveSolanaKeypairs({
+        SOLANA_FEE_PAYER_KEYPAIR: "/secure/fee-payer.json",
+      }),
+    /SOLANA_PROGRAM_KEYPAIR/
+  )
+  assert.throws(
+    () =>
+      resolveSolanaKeypairs({
+        SOLANA_FEE_PAYER_KEYPAIR: "/secure/fee-payer.json",
+        SOLANA_PROGRAM_KEYPAIR: "/secure/fee-payer.json",
+      }),
+    /must be separate/
+  )
+  assert.throws(() => resolveSolanaKeypairs({}), /SOLANA_FEE_PAYER_KEYPAIR/)
 })
 
 test("command construction never uses raw keys and redacts signer paths", () => {

@@ -8,7 +8,7 @@ implementation per chain** and **one Solana program**, then record addresses in
 
 | Item            | EVM                                                                 | Solana                                                                                                            |
 | --------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Deployer wallet | Encrypted Foundry account funded with each chain’s native gas token | Separate fee-payer, upgrade-authority, and deterministic program-ID keypair files; preflight reports required SOL |
+| Deployer wallet | Encrypted Foundry account funded with each chain’s native gas token | One funded fee-payer/authority keypair plus one unfunded program-ID keypair |
 | Tooling         | [Foundry](https://book.getfoundry.sh/getting-started/installation)  | [Solana CLI](https://solana.com/docs/intro/installation) + `cargo-build-sbf`                                      |
 | Token address   | Canonical USDC on that chain                                        | Mainnet USDC mint (or devnet USDC for testing)                                                                    |
 | RPC             | Public RPC URL (Alchemy, Infura, chain default)                     | `https://api.mainnet-beta.solana.com` or devnet                                                                   |
@@ -125,19 +125,19 @@ cargo build-sbf --version
 solana-verify --version
 ```
 
-### 2. Create or restore signer files
+### 2. Create or restore the signer files
 
-For a first testnet deployment, create three separate keypairs:
+For a first testnet deployment, create a funded deployer and a separate unfunded program-ID
+keypair. The deployer is both fee payer and upgrade/verification authority:
 
 ```bash
 mkdir -p "$HOME/.config/pockless/testnet"
 solana-keygen new --outfile "$HOME/.config/pockless/testnet/fee-payer.json"
-solana-keygen new --outfile "$HOME/.config/pockless/testnet/upgrade-authority.json"
 solana-keygen new --outfile "$HOME/.config/pockless/testnet/program-id.json"
 chmod 600 "$HOME/.config/pockless/testnet/"*.json
 ```
 
-Run each `solana-keygen new` command separately because each one prompts interactively.
+Run each `solana-keygen new` command separately because each prompts interactively.
 At `For added security, enter a BIP39 passphrase`, either:
 
 - Press Enter to use no additional seed passphrase for a disposable testnet key; or
@@ -147,13 +147,13 @@ At `For added security, enter a BIP39 passphrase`, either:
 The BIP39 passphrase does not encrypt the generated JSON file. The file contains raw signing
 material, which is why it must remain on encrypted storage with mode `600`.
 
-Back up every recovery phrase securely. Solana keypair JSON files contain raw signing
-material: never commit, upload, or share them. For an existing deployment identity, restore
-the three keypair files from encrypted storage instead of generating replacements.
+Back up both recovery phrases securely. Never commit, upload, or share the JSON files. For
+an existing deployment identity, restore the same files from encrypted storage instead of
+generating replacements.
 
-To use a Solana signer on another machine, prefer copying its JSON file from encrypted
-backup over a secure channel, then run `chmod 600 <path>`. Alternatively, recover one keypair
-from its seed phrase and optional BIP39 passphrase:
+To use the signer on another machine, copy its JSON file from encrypted backup over a secure
+channel, then run `chmod 600 <path>`. Alternatively, recover it from its seed phrase and
+optional BIP39 passphrase:
 
 ```bash
 solana-keygen recover 'prompt:?key=0/0' --outfile "/secure/tmp/recovered.json"
@@ -162,30 +162,24 @@ solana-keygen pubkey "/secure/tmp/recovered.json"
 ```
 
 Enter recovery material only into the hidden local prompt. Verify that the printed public
-key exactly matches the previously recorded fee payer, upgrade authority, or program ID.
-Repeat separately for each role; each has different recovery material.
+key exactly matches the previously recorded deployer address.
 
-For mainnet, create a different set of production-only keypairs on a trusted, encrypted
-machine. Never reuse testnet keys:
+For mainnet, create different production-only keypairs on a trusted, encrypted machine.
+Never reuse the testnet keys:
 
 ```bash
 mkdir -p "/secure/tmp/pockless-mainnet"
-solana-keygen new --outfile "/secure/tmp/pockless-mainnet/fee-payer.json"
-solana-keygen new --outfile "/secure/tmp/pockless-mainnet/upgrade-authority.json"
-solana-keygen new --outfile "/secure/tmp/pockless-mainnet/program-id.json"
+solana-keygen new --outfile "/secure/tmp/pockless-mainnet/solana-deployer.json"
+solana-keygen new --outfile "/secure/tmp/pockless-mainnet/solana-program-id.json"
 chmod 600 "/secure/tmp/pockless-mainnet/"*.json
 ```
 
-Before funding or deploying, make encrypted offline backups of all three files and their
-recovery phrases. Use strong, unique BIP39 passphrases and store them separately from the
-phrases and JSON files. Keep the upgrade-authority backup available until the deployed
-program is verified and deliberately made immutable. Restore these files only for
-deployment, verification, recovery, or immutability operations; remove the temporary copies
-afterward. The fee payer needs real SOL for deployment, and the upgrade authority needs the
-small verification balance reported by preflight.
+Before funding or deploying, make encrypted offline backups of both files and recovery
+phrases. Restore them only for deployment, verification, recovery, or immutability
+operations; remove temporary copies afterward. Only the deployer needs SOL for program rent
+plus the small verification balance reported by preflight. Do not fund the program ID.
 
-Record their absolute paths for `SOLANA_FEE_PAYER_KEYPAIR`,
-`SOLANA_UPGRADE_AUTHORITY_KEYPAIR`, and `SOLANA_PROGRAM_KEYPAIR`.
+Set `SOLANA_FEE_PAYER_KEYPAIR` and `SOLANA_PROGRAM_KEYPAIR` to their absolute paths.
 
 ### 3. Test and build the program
 
@@ -223,10 +217,9 @@ For testnet, fill in:
 - `EVM_DEPLOYER_ADDRESS`: public `0x` address printed by
   `cast wallet address --account pockless-release`.
 - `ETHERSCAN_API_KEY`: Etherscan V2 API key used to publish and verify the EVM source.
-- `SOLANA_FEE_PAYER_KEYPAIR`: absolute path to the funded Solana fee-payer JSON file.
-- `SOLANA_UPGRADE_AUTHORITY_KEYPAIR`: absolute path to the temporary upgrade-authority JSON
-  file retained until you deliberately make the mainnet program immutable.
-- `SOLANA_PROGRAM_KEYPAIR`: absolute path to the keypair that determines the program ID.
+- `SOLANA_FEE_PAYER_KEYPAIR`: absolute path to the funded Solana keypair JSON. The CLI uses
+  it as both fee payer and upgrade/verification authority.
+- `SOLANA_PROGRAM_KEYPAIR`: absolute path to the separate unfunded program-ID keypair.
 - `SOLANA_VERIFY_REPOSITORY_URL`: public source repository,
   `https://github.com/pockless-ai/contracts`.
 
@@ -235,7 +228,42 @@ defaults in `.env.example`; normally leave them unchanged.
 
 `deploy/.env` is gitignored. Never put private keys or recovery phrases in it.
 
-### 2. Run the non-signing preflight
+### 2. Fund the testnet signers
+
+An EVM private key produces the same address on Base Sepolia and Base mainnet, and a Solana
+keypair produces the same public key on devnet and mainnet-beta. Their balances are separate:
+testnet ETH and devnet SOL have no monetary value and cannot be moved to mainnet. Use separate
+production-only keys for mainnet even though key reuse is technically possible.
+
+For Base Sepolia, request test ETH from a provider in
+[Base's official faucet directory](https://docs.base.org/base-chain/network-information/network-faucets)
+and send it to `EVM_DEPLOYER_ADDRESS`. Some providers, including Alchemy, require mainnet
+wallet history; use another listed faucet rather than funding mainnet solely to meet faucet
+eligibility.
+
+If a faucet requires browser-wallet authentication, connect a separate everyday browser
+wallet, claim Base Sepolia ETH to that wallet, and then send the test ETH to
+`EVM_DEPLOYER_ADDRESS`. This avoids exposing the dedicated deployer key to a browser
+extension. Import the deployer into MetaMask or another provider only for a disposable
+testnet identity, never for the production deployer.
+
+For Solana devnet, print and fund the one deployer address:
+
+```bash
+solana-keygen pubkey "$HOME/.config/pockless/testnet/fee-payer.json"
+solana airdrop 2 "$(solana-keygen pubkey "$HOME/.config/pockless/testnet/fee-payer.json")" --url devnet
+```
+
+Public faucets are rate-limited, so retry later or use your provider's faucet if necessary.
+That one address covers deployment rent and the small verification balance. Deployment
+itself does not require USDC; test USDC is only needed later when testing wallet
+authorization and swaps.
+
+Mainnet funding uses real native assets: ETH or the chain's gas token for every selected EVM
+network, and SOL for the Solana deployer. The preflight reports the required amount for
+each public address before any transaction is signed.
+
+### 3. Run the non-signing preflight
 
 ```bash
 yarn deploy --environment testnet --dry-run
@@ -245,7 +273,7 @@ Preflight tests and builds both contracts, validates RPC networks and USDC, veri
 identities, and reports funding deficits. Fund only the displayed public addresses, then
 repeat the dry-run until every deficit is zero.
 
-### 3. Deploy
+### 4. Deploy
 
 ```bash
 yarn deploy --environment testnet
@@ -259,7 +287,7 @@ mainnet may not.
 Successful targets are merged into [`deployments.json`](./deployments.json) automatically.
 Do not hand-copy addresses from terminal output.
 
-### 4. Make Solana immutable (mainnet only)
+### 5. Make Solana immutable (mainnet only)
 
 Mainnet deployment retains upgrade authority. Only after public verification, hash review,
 and final sign-off run:
@@ -272,7 +300,7 @@ The stronger confirmation includes the cluster and program ID. The CLI verifies 
 on-chain hash and authority before removal and reads back no authority afterward. This is
 irreversible and cannot be combined with deploy. A future V2 requires a new program ID.
 
-### 5. Activate user wallets (not done at deploy time)
+### 6. Activate user wallets (not done at deploy time)
 
 For EVM, each wallet owner delegates their EOA to the implementation address using their
 wallet’s EIP-7702 flow. Admin calls are self-calls to the owner address; swaps use

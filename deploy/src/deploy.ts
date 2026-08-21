@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url"
 import {
   createPublicClient,
   encodeDeployData,
+  formatEther,
+  formatUnits,
   getAddress,
   http,
   keccak256,
@@ -35,6 +37,7 @@ import {
   type SolanaTarget,
 } from "./config"
 import { mergeDeployments } from "./deployments"
+import { resolveSolanaKeypairs } from "./env"
 import {
   assertResumeCompatible,
   loadManifest,
@@ -397,11 +400,11 @@ async function preflightEvm(
     const balance = await client.getBalance({ address: sender })
     const deficit = balance >= requiredBalance ? 0n : requiredBalance - balance
     log(
-      `${target.name}: balance=${balance} wei estimated=${estimated} wei required=${requiredBalance} wei deficit=${deficit} wei`
+      `${target.name}: balance=${formatEther(balance)} ETH (${balance} wei), estimated=${formatEther(estimated)} ETH (${estimated} wei), required=${formatEther(requiredBalance)} ETH (${requiredBalance} wei), deficit=${formatEther(deficit)} ETH (${deficit} wei)`
     )
     if (deficit > 0n) {
       throw new Error(
-        `${target.name} deployer is underfunded by ${deficit} wei`
+        `${target.name} deployer is underfunded by ${formatEther(deficit)} ETH (${deficit} wei)`
       )
     }
   } else {
@@ -425,35 +428,33 @@ async function preflightSolana(
   existing?: TargetState
 ) {
   const rpc = requiredRpc(target, options.source)
-  const feePayer = required(options.source, "SOLANA_FEE_PAYER_KEYPAIR")
-  const authority = required(options.source, "SOLANA_UPGRADE_AUTHORITY_KEYPAIR")
-  const programKeypair = required(options.source, "SOLANA_PROGRAM_KEYPAIR")
-  await Promise.all([
-    validateKeypair(
-      feePayer,
-      "fee payer",
-      log,
-      options.environment === "mainnet"
-    ),
-    validateKeypair(
-      authority,
-      "upgrade authority",
-      log,
-      options.environment === "mainnet"
-    ),
-    validateKeypair(
-      programKeypair,
-      "program id",
-      log,
-      options.environment === "mainnet"
-    ),
-  ])
+  const { feePayer, authority, programKeypair } = resolveSolanaKeypairs(
+    options.source
+  )
+  log(
+    `${target.name}: using SOLANA_FEE_PAYER_KEYPAIR as fee payer and upgrade authority`
+  )
+  const uniqueKeypairs = [...new Set([feePayer, authority, programKeypair])]
+  await Promise.all(
+    uniqueKeypairs.map((path) =>
+      validateKeypair(
+        path,
+        path === feePayer
+          ? "fee payer"
+          : path === authority
+            ? "upgrade authority"
+            : "program id",
+        log,
+        options.environment === "mainnet"
+      )
+    )
+  )
   await solanaRpc(rpc, "getVersion")
   const genesis = await solanaRpc<string>(rpc, "getGenesisHash")
   const expectedGenesis =
     target.cluster === "mainnet-beta"
-      ? "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
-      : "EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+      ? "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+      : "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
   if (genesis !== expectedGenesis) {
     throw new Error(
       `${target.name} RPC genesis hash does not match ${target.cluster}`
@@ -475,6 +476,18 @@ async function preflightSolana(
   const programId = (
     await checked(run, "solana-keygen", ["pubkey", programKeypair])
   ).stdout.trim()
+  if (programId === payerPubkey) {
+    throw new Error(
+      "Solana program ID must differ from the fee payer; generate a separate unfunded SOLANA_PROGRAM_KEYPAIR"
+    )
+  }
+  const minimumAuthorityLamports = BigInt(
+    positiveInteger(
+      options.source,
+      "SOLANA_VERIFY_AUTHORITY_MIN_LAMPORTS",
+      50_000_000
+    )
+  )
   if (!existing?.programId || options.redeploy) {
     const balance = await solanaRpc<{ value: number }>(rpc, "getBalance", [
       payerPubkey,
@@ -488,48 +501,25 @@ async function preflightSolana(
         { commitment: "confirmed" },
       ])
     )
-    const requiredBalance =
+    let requiredBalance =
       (rent * BigInt(100 + options.safetyBufferPercent)) / 100n
+    if (!options.skipSolanaVerification) {
+      requiredBalance += minimumAuthorityLamports
+    }
     const deficit =
       lamports >= requiredBalance ? 0n : requiredBalance - lamports
     log(
-      `${target.name}: conservative (not exact) rent estimate=${rent} lamports for ${conservativeSize} bytes; balance=${lamports}, required=${requiredBalance}, deficit=${deficit}`
+      `${target.name}: conservative (not exact) rent estimate=${formatUnits(rent, 9)} SOL (${rent} lamports) for ${conservativeSize} bytes; balance=${formatUnits(lamports, 9)} SOL (${lamports} lamports), required=${formatUnits(requiredBalance, 9)} SOL (${requiredBalance} lamports), deficit=${formatUnits(deficit, 9)} SOL (${deficit} lamports)`
     )
     if (deficit > 0n) {
       throw new Error(
-        `${target.name} fee payer is underfunded by ${deficit} lamports`
+        `${target.name} fee payer is underfunded by ${formatUnits(deficit, 9)} SOL (${deficit} lamports)`
       )
     }
   } else {
     log(
       `${target.name}: deployed program is already recorded; deployment funding check skipped`
     )
-  }
-  if (!options.skipSolanaVerification) {
-    const authorityBalance = await solanaRpc<{ value: number }>(
-      rpc,
-      "getBalance",
-      [authorityPubkey, { commitment: "confirmed" }]
-    )
-    const minimumAuthorityLamports = BigInt(
-      positiveInteger(
-        options.source,
-        "SOLANA_VERIFY_AUTHORITY_MIN_LAMPORTS",
-        50_000_000
-      )
-    )
-    const authorityDeficit =
-      BigInt(authorityBalance.value) >= minimumAuthorityLamports
-        ? 0n
-        : minimumAuthorityLamports - BigInt(authorityBalance.value)
-    log(
-      `${target.name}: verification authority balance=${authorityBalance.value} lamports, conservative required=${minimumAuthorityLamports}, deficit=${authorityDeficit}`
-    )
-    if (authorityDeficit > 0n) {
-      throw new Error(
-        `${target.name} verification authority is underfunded by ${authorityDeficit} lamports`
-      )
-    }
   }
   return {
     rpc,

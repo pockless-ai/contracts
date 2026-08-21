@@ -40,10 +40,10 @@ Profiles are fixed:
 - `EVM_FOUNDRY_ACCOUNT`: encrypted Foundry keystore account name.
 - `EVM_DEPLOYER_ADDRESS`: public address belonging to that Foundry account.
 - `ETHERSCAN_API_KEY`: Etherscan V2 key for explorer source verification.
-- `SOLANA_FEE_PAYER_KEYPAIR`: absolute path to the funded deployment fee-payer JSON.
-- `SOLANA_UPGRADE_AUTHORITY_KEYPAIR`: absolute path to the authority JSON retained until
-  mainnet immutability is explicitly finalized.
-- `SOLANA_PROGRAM_KEYPAIR`: absolute path to the deterministic program-ID keypair JSON.
+- `SOLANA_FEE_PAYER_KEYPAIR`: absolute path to the funded Solana keypair JSON. This one
+  wallet is both fee payer and upgrade/verification authority.
+- `SOLANA_PROGRAM_KEYPAIR`: absolute path to a separate unfunded deployment-only keypair.
+  Its public key becomes the program ID and must differ from the fee payer.
 - `SOLANA_VERIFY_REPOSITORY_URL`: public source repository used by `solana-verify`.
 - Other `SOLANA_VERIFY_*` values control verification polling and the conservative authority
   balance; their checked-in defaults normally need no changes.
@@ -85,21 +85,20 @@ exporting the raw key. If another wallet cannot import the keystore, the last-re
 prompt. Run it only in a private, unrecorded local terminal and never place its output in
 chat, screenshots, `.env`, shell history, or source control.
 
-Restore the Solana fee payer, upgrade-authority, and deterministic program keypairs from
-encrypted storage only for the operation:
+Restore the Solana keypair from encrypted storage only for the operation:
 
 ```bash
-chmod 600 /secure/tmp/{fee-payer,upgrade-authority,program-id}.json
-export SOLANA_FEE_PAYER_KEYPAIR=/secure/tmp/fee-payer.json
-export SOLANA_UPGRADE_AUTHORITY_KEYPAIR=/secure/tmp/upgrade-authority.json
-export SOLANA_PROGRAM_KEYPAIR=/secure/tmp/program-id.json
+chmod 600 /secure/tmp/solana-deployer.json
+chmod 600 /secure/tmp/solana-program-id.json
+export SOLANA_FEE_PAYER_KEYPAIR=/secure/tmp/solana-deployer.json
+export SOLANA_PROGRAM_KEYPAIR=/secure/tmp/solana-program-id.json
 ```
 
-Mainnet must use production-only keypairs that are never reused from devnet. Generate them
-on a trusted encrypted machine, make encrypted offline backups of the files and recovery
-phrases before funding, and restore only temporary `chmod 600` copies for deployment. Retain
-the upgrade-authority backup until verification and the separate immutability operation are
-complete.
+Only the deployer needs SOL. The separate program-ID keypair is an initial-deployment signer
+and must remain unfunded. Mainnet must use production-only keypairs that are never reused
+from devnet. Generate them on a trusted encrypted machine, make encrypted offline backups
+before deployment, and restore only temporary `chmod 600` copies. Keep the deployer backup
+until verification and the separate immutability operation are complete.
 
 Run a complete non-signing preflight, fund the reported public addresses manually, then
 repeat until every deficit is zero:
@@ -150,17 +149,18 @@ cargo build-sbf -- -p strategy-spend
 
 ### Public Solana verification
 
-Set `SOLANA_VERIFY_REPOSITORY_URL` to the public repository. The CLI derives the uploader
-from `SOLANA_UPGRADE_AUTHORITY_KEYPAIR`, creates an isolated temporary Solana CLI config,
-and runs `solana-verify verify-from-repo` interactively for the exact pushed commit,
-library `strategy_spend`, and mount path `solana/programs/strategy-spend`. It then submits
-the remote job and waits until the public verification API reports matching hashes.
-Mainnet fails if the commit is dirty, unpushed, or not publicly verified.
+Set `SOLANA_VERIFY_REPOSITORY_URL` to the public repository. The CLI uses the fee payer as
+the upgrade/verification authority, creates an isolated temporary Solana CLI config, and
+runs `solana-verify verify-from-repo`
+interactively for the exact pushed commit, library `strategy_spend`, and mount path
+`solana/programs/strategy-spend`. It then submits the remote job and waits until the
+public verification API reports matching hashes. Mainnet fails if the commit is dirty,
+unpushed, or not publicly verified.
 
-Uploading verification metadata requires a small SOL balance on the upgrade-authority
-wallet in addition to the deployment fee payer. Preflight reports both deficits. The
-default conservative authority minimum and verification polling timeout can be adjusted
-with the documented `SOLANA_VERIFY_*` variables in `deploy/.env.example`.
+Uploading verification metadata needs a small extra SOL balance. Preflight adds that amount
+to the one deployer check. The default conservative authority minimum and verification
+polling timeout can be adjusted with the documented `SOLANA_VERIFY_*` variables in
+`deploy/.env.example`.
 
 Per wallet, owners run `InitWallet` once, then `InitStrategy` per strategy id.
 

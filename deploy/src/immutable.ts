@@ -71,24 +71,15 @@ export async function runImmutable(
   if (state.immutableAt)
     throw new Error("Solana program is already recorded as immutable")
   const rpc = requiredRpc(target, source)
-  const authorityPath = source.SOLANA_UPGRADE_AUTHORITY_KEYPAIR?.trim()
   const feePayerPath = source.SOLANA_FEE_PAYER_KEYPAIR?.trim()
-  if (!authorityPath || !feePayerPath) {
+  if (!feePayerPath) throw new Error("SOLANA_FEE_PAYER_KEYPAIR is required")
+  const authorityPath = feePayerPath
+  await access(feePayerPath)
+  const mode = (await stat(feePayerPath)).mode & 0o777
+  if ((mode & 0o077) !== 0) {
     throw new Error(
-      "SOLANA_UPGRADE_AUTHORITY_KEYPAIR and SOLANA_FEE_PAYER_KEYPAIR are required"
+      `fee payer permissions are ${mode.toString(8)}; run chmod 600 on the temporary file`
     )
-  }
-  for (const [label, keypairPath] of [
-    ["upgrade authority", authorityPath],
-    ["fee payer", feePayerPath],
-  ] as const) {
-    await access(keypairPath)
-    const mode = (await stat(keypairPath)).mode & 0o777
-    if ((mode & 0o077) !== 0) {
-      throw new Error(
-        `${label} permissions are ${mode.toString(8)}; run chmod 600 on the temporary file`
-      )
-    }
   }
   const authority = (
     await checked(run, "solana-keygen", ["pubkey", authorityPath])

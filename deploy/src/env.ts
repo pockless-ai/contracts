@@ -23,8 +23,6 @@ export const env: Record<string, string | undefined> = {
   EVM_DEPLOYER_ADDRESS: process.env.EVM_DEPLOYER_ADDRESS,
   ETHERSCAN_API_KEY: process.env.ETHERSCAN_API_KEY,
   SOLANA_FEE_PAYER_KEYPAIR: process.env.SOLANA_FEE_PAYER_KEYPAIR,
-  SOLANA_UPGRADE_AUTHORITY_KEYPAIR:
-    process.env.SOLANA_UPGRADE_AUTHORITY_KEYPAIR,
   SOLANA_PROGRAM_KEYPAIR: process.env.SOLANA_PROGRAM_KEYPAIR,
   SOLANA_VERIFY_REPOSITORY_URL: process.env.SOLANA_VERIFY_REPOSITORY_URL,
   SOLANA_VERIFY_STATUS_URL: process.env.SOLANA_VERIFY_STATUS_URL,
@@ -32,4 +30,23 @@ export const env: Record<string, string | undefined> = {
   SOLANA_VERIFY_POLL_SECONDS: process.env.SOLANA_VERIFY_POLL_SECONDS,
   SOLANA_VERIFY_AUTHORITY_MIN_LAMPORTS:
     process.env.SOLANA_VERIFY_AUTHORITY_MIN_LAMPORTS,
+}
+
+export function resolveSolanaKeypairs(
+  source: Record<string, string | undefined>
+) {
+  const feePayer = source.SOLANA_FEE_PAYER_KEYPAIR?.trim()
+  if (!feePayer) throw new Error("SOLANA_FEE_PAYER_KEYPAIR is required")
+  const programKeypair = source.SOLANA_PROGRAM_KEYPAIR?.trim()
+  if (!programKeypair) throw new Error("SOLANA_PROGRAM_KEYPAIR is required")
+  if (programKeypair === feePayer) {
+    throw new Error(
+      "SOLANA_PROGRAM_KEYPAIR must be separate from SOLANA_FEE_PAYER_KEYPAIR"
+    )
+  }
+  return {
+    feePayer,
+    authority: feePayer,
+    programKeypair,
+  }
 }
