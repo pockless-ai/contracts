@@ -112,11 +112,18 @@ test("command construction never uses raw keys and redacts signer paths", () => 
     usdc: testUsdc,
   })
   assert.equal(evm.includes("--private-key"), false)
-  assert.equal(evm.includes("--sender"), true)
-  assert.equal(evm.includes("--from"), false)
+  assert.equal(evm.includes("--sender"), false)
+  assert.equal(evm.includes("--from"), true)
+  assert.deepEqual(evm.slice(-4), [
+    "--broadcast",
+    "--json",
+    "--constructor-args",
+    testUsdc,
+  ])
   const redactedEvm = redactArgs(evm)
   assert.equal(redactedEvm[redactedEvm.indexOf("--rpc-url") + 1], "<redacted>")
   assert.equal(redactedEvm[redactedEvm.indexOf("--account") + 1], "<redacted>")
+  assert.equal(redactedEvm[redactedEvm.indexOf("--from") + 1], "<redacted>")
   const solana = solanaDeployArgs({
     artifact: "program.so",
     rpc: "https://rpc.example",

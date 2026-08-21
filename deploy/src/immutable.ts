@@ -21,7 +21,8 @@ type ProgramInfo = {
 async function onChainProgramHash(
   run: RunCommand,
   rpc: string,
-  programId: string
+  programId: string,
+  keypair: string
 ) {
   const directory = await mkdtemp(join(tmpdir(), "pockless-program-"))
   const output = join(directory, "program.so")
@@ -33,6 +34,8 @@ async function onChainProgramHash(
       output,
       "--url",
       rpc,
+      "--keypair",
+      keypair,
     ])
     return createHash("sha256")
       .update(await readFile(output))
@@ -92,6 +95,8 @@ export async function runImmutable(
         state.programId,
         "--url",
         rpc,
+        "--keypair",
+        feePayerPath,
         "--output",
         "json",
       ])
@@ -103,7 +108,12 @@ export async function runImmutable(
       `on-chain upgrade authority does not match the supplied authority keypair`
     )
   }
-  const hash = await onChainProgramHash(run, rpc, state.programId)
+  const hash = await onChainProgramHash(
+    run,
+    rpc,
+    state.programId,
+    feePayerPath
+  )
   if (hash !== state.programHash) {
     throw new Error(
       "on-chain program hash does not match the recorded verified release"
@@ -130,6 +140,8 @@ export async function runImmutable(
         state.programId,
         "--url",
         rpc,
+        "--keypair",
+        feePayerPath,
         "--output",
         "json",
       ])

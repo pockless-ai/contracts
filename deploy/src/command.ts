@@ -22,6 +22,7 @@ const SECRET_FLAGS = new Set([
   "--fee-payer",
   "--upgrade-authority",
   "--program-id",
+  "--from",
   "--etherscan-api-key",
   "--rpc-url",
   "--url",
@@ -130,12 +131,12 @@ export function evmDeployArgs(input: {
     input.rpc,
     "--account",
     input.account,
-    "--sender",
+    "--from",
     input.sender,
-    "--constructor-args",
-    input.usdc,
     "--broadcast",
     "--json",
+    "--constructor-args",
+    input.usdc,
   ]
 }
 

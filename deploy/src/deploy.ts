@@ -99,7 +99,8 @@ async function sha256(path: string) {
 async function solanaProgramHash(
   run: RunCommand,
   rpc: string,
-  programId: string
+  programId: string,
+  keypair: string
 ) {
   const directory = await mkdtemp(join(tmpdir(), "pockless-program-"))
   const output = join(directory, "program.so")
@@ -111,6 +112,8 @@ async function solanaProgramHash(
       output,
       "--url",
       rpc,
+      "--keypair",
+      keypair,
     ])
     return await sha256(output)
   } finally {
@@ -693,6 +696,8 @@ async function deploySolana(
         programId,
         "--url",
         preflight.rpc,
+        "--keypair",
+        preflight.feePayer,
         "--output",
         "json",
       ])
@@ -712,7 +717,12 @@ async function deploySolana(
       `${target.name} upgrade authority does not match the supplied keypair`
     )
   }
-  const programHash = await solanaProgramHash(run, preflight.rpc, programId)
+  const programHash = await solanaProgramHash(
+    run,
+    preflight.rpc,
+    programId,
+    preflight.feePayer
+  )
   const repository = options.source.SOLANA_VERIFY_REPOSITORY_URL?.trim()
   let verificationStatus: "verified" | "pending" = "verified"
   let verifiedAt: string | undefined
@@ -750,6 +760,8 @@ async function deploySolana(
     await checked(run, "solana-verify", [
       "remote",
       "submit-job",
+      "--url",
+      preflight.rpc,
       "--program-id",
       programId,
       "--uploader",
@@ -900,7 +912,8 @@ export async function runDeploy(
             (await solanaProgramHash(
               dependencies.run,
               solanaPreflight.rpc,
-              existing.programId
+              existing.programId,
+              solanaPreflight.feePayer
             )) !== existing.programHash
           ) {
             throw new Error(
