@@ -1087,6 +1087,14 @@ export async function runDeploy(
   if (options.operation === "upgrade" && options.forceBroadcast) {
     throw new Error("upgrade does not accept --force-broadcast")
   }
+  const targets = loadTargets(options.environment, options.source)
+  if (!dependencies.preflight) {
+    for (const target of targets) requiredRpc(target, options.source)
+    required(options.source, "EVM_FOUNDRY_ACCOUNT")
+    required(options.source, "EVM_DEPLOYER_ADDRESS")
+    required(options.source, "ETHERSCAN_API_KEY")
+    resolveSolanaKeypairs(options.source)
+  }
   let commit: string
   if (dependencies.setup) {
     commit = (await dependencies.setup()).releaseCommit
@@ -1142,7 +1150,6 @@ export async function runDeploy(
       await access(solanaArtifact)
     }
   }
-  const targets = loadTargets(options.environment, options.source)
   const path =
     dependencies.manifestPath ??
     join(manifestDirectory, `${options.environment}.json`)

@@ -2,7 +2,7 @@ import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { getAddress, type Address } from "viem"
 import { loadTargets, requiredRpc } from "../../../src/config"
-import { env } from "../../../src/env"
+import { loadDeployEnv } from "../../../src/env"
 import { loadManifest } from "../../../src/manifest"
 
 const deployRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..")
@@ -34,6 +34,7 @@ export async function loadSmokeConfig(): Promise<SmokeConfig> {
   if (!smokeEnabled()) {
     throw new Error("Set LIVE_SMOKE=1 to run testnet smoke tests")
   }
+  const env = (await loadDeployEnv("testnet")).source
 
   const owner = env.EVM_DEPLOYER_ADDRESS?.trim()
   const account = env.EVM_FOUNDRY_ACCOUNT?.trim()
@@ -45,9 +46,7 @@ export async function loadSmokeConfig(): Promise<SmokeConfig> {
     throw new Error("SOLANA_FEE_PAYER_KEYPAIR is required")
   }
 
-  const manifest = await loadManifest(
-    join(deployRoot, ".deploy/testnet.json")
-  )
+  const manifest = await loadManifest(join(deployRoot, ".deploy/testnet.json"))
   if (!manifest) {
     throw new Error(
       "No testnet deployment manifest found at deploy/.deploy/testnet.json"
@@ -56,11 +55,7 @@ export async function loadSmokeConfig(): Promise<SmokeConfig> {
 
   const evmState = manifest.targets["84532"]
   const solanaState = manifest.targets.devnet
-  if (
-    !evmState ||
-    evmState.status !== "complete" ||
-    !evmState.address
-  ) {
+  if (!evmState || evmState.status !== "complete" || !evmState.address) {
     throw new Error("Base Sepolia deployment is not complete in the manifest")
   }
   if (
@@ -105,6 +100,6 @@ export { contractsRoot, deployRoot }
 export function assertEvmSignerAccess(config: SmokeConfig["evm"]) {
   if (config.foundryPassword || process.stdin.isTTY) return
   throw new Error(
-    "Base Sepolia smoke needs EVM_FOUNDRY_PASSWORD in deploy/.env when stdin is not a TTY"
+    "Base Sepolia smoke needs EVM_FOUNDRY_PASSWORD in deploy/.env or deploy/.env.testnet when stdin is not a TTY"
   )
 }

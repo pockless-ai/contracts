@@ -1,5 +1,7 @@
 .deploy/
 .env
+.env.testnet
+.env.mainnet
 *.keypair.json
 node_modules
 .yarn

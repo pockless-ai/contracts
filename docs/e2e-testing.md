@@ -43,8 +43,8 @@ After a successful testnet deploy, run the lifecycle smoke test from
 yarn smoke:testnet
 ```
 
-The command is opt-in (`LIVE_SMOKE=1` is set by the script). It reads RPC URLs and
-signer paths from `deploy/.env`, loads deployed addresses from
+The command is opt-in (`LIVE_SMOKE=1` is set by the script). It reads testnet RPC URLs and
+signer paths from `deploy/.env.testnet` with shared fallback values from `deploy/.env`, loads deployed addresses from
 `deploy/.deploy/testnet.json`, and exercises both chains without swaps:
 
 - **Base Sepolia** — verify implementation bytecode and USDC config, EIP-7702 delegate the
@@ -54,7 +54,7 @@ signer paths from `deploy/.env`, loads deployed addresses from
   `InitStrategy`, read the strategy account, revoke, close the flat strategy.
 
 For the EVM leg, either enter the Foundry keystore password at the prompt or set
-`EVM_FOUNDRY_PASSWORD` in `deploy/.env` when Yarn/Cursor runs without a TTY. Delegation uses
+`EVM_FOUNDRY_PASSWORD` in `deploy/.env` or `deploy/.env.testnet` when Yarn/Cursor runs without a TTY. Delegation uses
 Foundry's self-broadcast flow (`cast send --auth <implementation>`) with a fixed 500k gas limit;
 the first grant combines delegation and `grant` in one type-4 transaction when needed. The
 Solana leg reuses the funded deployer keypair from `SOLANA_FEE_PAYER_KEYPAIR`. This validates

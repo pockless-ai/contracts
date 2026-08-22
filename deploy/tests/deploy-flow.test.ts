@@ -9,7 +9,7 @@ import {
   solanaDeployArgs,
   type RunCommand,
 } from "../src/command"
-import { resolveSolanaKeypairs } from "../src/env"
+import { loadDeployEnv, resolveSolanaKeypairs } from "../src/env"
 import { loadTargets } from "../src/config"
 import { runDeploy, waitForRuntimeCode } from "../src/deploy"
 import { mergeDeployments } from "../src/deployments"
@@ -27,6 +27,40 @@ import {
 } from "../src/safety"
 
 const testUsdc = "0x1111111111111111111111111111111111111111"
+
+test("deployment environment profiles override shared values without leaking across environments", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pockless-env-profiles-"))
+  const originalRpc = process.env.BASE_SEPOLIA_RPC_URL
+  try {
+    delete process.env.BASE_SEPOLIA_RPC_URL
+    await writeFile(
+      join(directory, ".env"),
+      "BASE_SEPOLIA_RPC_URL=https://shared.example\nETHERSCAN_API_KEY=shared-key\n"
+    )
+    await writeFile(
+      join(directory, ".env.testnet"),
+      "BASE_SEPOLIA_RPC_URL=https://testnet.example\nEVM_FOUNDRY_ACCOUNT=testnet-account\nSOLANA_FEE_PAYER_KEYPAIR=/testnet/payer.json\n"
+    )
+    await writeFile(
+      join(directory, ".env.mainnet"),
+      "EVM_FOUNDRY_ACCOUNT=mainnet-account\nSOLANA_FEE_PAYER_KEYPAIR=/mainnet/payer.json\n"
+    )
+
+    const testnet = await loadDeployEnv("testnet", directory)
+    const mainnet = await loadDeployEnv("mainnet", directory)
+    assert.equal(testnet.source.BASE_SEPOLIA_RPC_URL, "https://testnet.example")
+    assert.equal(testnet.source.EVM_FOUNDRY_ACCOUNT, "testnet-account")
+    assert.equal(mainnet.source.EVM_FOUNDRY_ACCOUNT, "mainnet-account")
+    assert.equal(testnet.source.ETHERSCAN_API_KEY, "shared-key")
+    assert.equal(testnet.source.SOLANA_FEE_PAYER_KEYPAIR, "/testnet/payer.json")
+    assert.equal(mainnet.source.SOLANA_FEE_PAYER_KEYPAIR, "/mainnet/payer.json")
+    assert.deepEqual(testnet.loadedFiles, [".env.testnet", ".env"])
+  } finally {
+    if (originalRpc === undefined) delete process.env.BASE_SEPOLIA_RPC_URL
+    else process.env.BASE_SEPOLIA_RPC_URL = originalRpc
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test("runtime code polling retries empty code and succeeds", async () => {
   let calls = 0

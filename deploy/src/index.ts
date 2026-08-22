@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import { runDeploy } from "./deploy"
-import { env } from "./env"
+import { loadDeployEnv } from "./env"
 import { runImmutable } from "./immutable"
 import {
   assertInteractiveMainnet,
@@ -11,6 +11,7 @@ import {
 import type { Environment } from "./config"
 
 type Flags = Record<string, string | boolean>
+let env: Record<string, string | undefined> = {}
 
 function parse(argv: string[]) {
   const command = argv[0]
@@ -74,7 +75,11 @@ Options:
 async function main() {
   const { command, flags } = parse(process.argv.slice(2))
   if (flags.help) return usage()
-  if (command !== "deploy" && command !== "upgrade" && command !== "immutable") {
+  if (
+    command !== "deploy" &&
+    command !== "upgrade" &&
+    command !== "immutable"
+  ) {
     usage()
     throw new Error("command must be deploy, upgrade, or immutable")
   }
@@ -82,6 +87,13 @@ async function main() {
   if (environment !== "testnet" && environment !== "mainnet") {
     throw new Error("--environment must be testnet or mainnet")
   }
+  const loaded = await loadDeployEnv(environment)
+  env = loaded.source
+  console.log(
+    loaded.loadedFiles.length > 0
+      ? `Loaded deployment environment from ${loaded.loadedFiles.join(", ")}.`
+      : `No deployment environment files found; using exported variables.`
+  )
   assertInteractiveMainnet(environment)
   if (command === "immutable") {
     if (environment !== "mainnet") {
@@ -129,8 +141,16 @@ async function main() {
 
 main().catch((error) => {
   let message = error instanceof Error ? error.message : String(error)
-  for (const value of Object.values(env)) {
-    if (value) message = message.split(value).join("<redacted>")
+  for (const [key, value] of Object.entries(env)) {
+    if (
+      value &&
+      (key.endsWith("_RPC_URL") ||
+        key.includes("PASSWORD") ||
+        key.includes("API_KEY") ||
+        key.includes("KEYPAIR"))
+    ) {
+      message = message.split(value).join("<redacted>")
+    }
   }
   console.error(message)
   process.exitCode = 1

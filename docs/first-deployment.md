@@ -6,12 +6,12 @@ implementation per chain** and **one Solana program**, then record addresses in
 
 ## What you need
 
-| Item            | EVM                                                                 | Solana                                                                                                            |
-| --------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Deployer wallet | Encrypted Foundry account funded with each chain’s native gas token | One funded fee-payer/authority keypair plus one unfunded program-ID keypair |
-| Tooling         | [Foundry](https://book.getfoundry.sh/getting-started/installation)  | [Solana CLI](https://solana.com/docs/intro/installation) + `cargo-build-sbf`                                      |
-| Token address   | Canonical USDC on that chain                                        | Mainnet USDC mint (or devnet USDC for testing)                                                                    |
-| RPC             | Public RPC URL (Alchemy, Infura, chain default)                     | `https://api.mainnet-beta.solana.com` or devnet                                                                   |
+| Item            | EVM                                                                 | Solana                                                                       |
+| --------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Deployer wallet | Encrypted Foundry account funded with each chain’s native gas token | One funded fee-payer/authority keypair plus one unfunded program-ID keypair  |
+| Tooling         | [Foundry](https://book.getfoundry.sh/getting-started/installation)  | [Solana CLI](https://solana.com/docs/intro/installation) + `cargo-build-sbf` |
+| Token address   | Canonical USDC on that chain                                        | Mainnet USDC mint (or devnet USDC for testing)                               |
+| RPC             | Public RPC URL (Alchemy, Infura, chain default)                     | `https://api.mainnet-beta.solana.com` or devnet                              |
 
 Use **devnet / testnet first**. Do not deploy to mainnet until tests pass and you have an
 audit or explicit risk acceptance.
@@ -103,8 +103,9 @@ recovery method.
 
 ### 4. Record the EVM configuration
 
-You will create `deploy/.env` after completing the Solana setup below. Record the Foundry
-account name, its public address, an Etherscan API key, and the target EVM RPC URL. For
+You will create shared `deploy/.env` and environment-specific deployment profiles after
+completing the Solana setup below. Record the Foundry account name, its public address, an
+Etherscan API key, and the target EVM RPC URL. For
 mainnet, the deployment CLI already
 contains the official USDC contract address for every supported EVM chain, so you do not
 provide mainnet USDC addresses in `.env`. The CLI validates each configured contract on-chain
@@ -156,9 +157,12 @@ channel, then run `chmod 600 <path>`. Alternatively, recover it from its seed ph
 optional BIP39 passphrase:
 
 ```bash
-solana-keygen recover 'prompt:?key=0/0' --outfile "/secure/tmp/recovered.json"
-chmod 600 "/secure/tmp/recovered.json"
-solana-keygen pubkey "/secure/tmp/recovered.json"
+RECOVERY_DIR="$HOME/.config/pockless/recovery"
+mkdir -p "$RECOVERY_DIR"
+chmod 700 "$RECOVERY_DIR"
+solana-keygen recover 'prompt:?key=0/0' --outfile "$RECOVERY_DIR/recovered.json"
+chmod 600 "$RECOVERY_DIR/recovered.json"
+solana-keygen pubkey "$RECOVERY_DIR/recovered.json"
 ```
 
 Enter recovery material only into the hidden local prompt. Verify that the printed public
@@ -168,14 +172,23 @@ For mainnet, create different production-only keypairs on a trusted, encrypted m
 Never reuse the testnet keys:
 
 ```bash
-mkdir -p "/secure/tmp/pockless-mainnet"
-solana-keygen new --outfile "/secure/tmp/pockless-mainnet/solana-deployer.json"
-solana-keygen new --outfile "/secure/tmp/pockless-mainnet/solana-program-id.json"
-chmod 600 "/secure/tmp/pockless-mainnet/"*.json
+MAINNET_KEY_DIR="$HOME/.config/pockless/mainnet"
+mkdir -p "$MAINNET_KEY_DIR"
+chmod 700 "$MAINNET_KEY_DIR"
+solana-keygen new --outfile "$MAINNET_KEY_DIR/solana-deployer.json"
+solana-keygen new --outfile "$MAINNET_KEY_DIR/solana-program-id.json"
+chmod 600 \
+  "$MAINNET_KEY_DIR/solana-deployer.json" \
+  "$MAINNET_KEY_DIR/solana-program-id.json"
 ```
 
+On macOS, use this home-directory location only when FileVault is enabled. Otherwise, set
+`MAINNET_KEY_DIR` to a writable encrypted volume. `/secure/tmp` is not a standard macOS
+directory and the sealed system volume prevents creating it.
+
 Before funding or deploying, make encrypted offline backups of both files and recovery
-phrases. Restore them only for deployment, verification, recovery, or immutability
+phrases. A BIP39 passphrase protects the recovery phrase but does not encrypt the JSON
+keypair file. Restore keypairs only for deployment, verification, recovery, or immutability
 operations; remove temporary copies afterward. Only the deployer needs SOL for program rent
 plus the small verification balance reported by preflight. Do not fund the program ID.
 
@@ -203,7 +216,15 @@ run it until both Part 1 and Part 2 are complete.
 
 ```bash
 cp deploy/.env.example deploy/.env
+cp deploy/.env.testnet.example deploy/.env.testnet
+cp deploy/.env.mainnet.example deploy/.env.mainnet
 ```
+
+Put shared verification values in `deploy/.env`. Put testnet RPCs and persistent testnet-only
+EVM and Solana signer values in `deploy/.env.testnet`. Put mainnet RPCs and persistent
+production-only EVM and Solana signer values in `deploy/.env.mainnet`. The CLI automatically
+selects the matching profile from `--environment`, so switching environments does not
+require editing or copying signer values.
 
 For testnet, fill in:
 
@@ -226,7 +247,8 @@ For testnet, fill in:
 The `SOLANA_VERIFY_*` status, timeout, polling, and minimum-balance values already have
 defaults in `.env.example`; normally leave them unchanged.
 
-`deploy/.env` is gitignored. Never put private keys or recovery phrases in it.
+All three populated environment files are gitignored. Never put private keys or recovery
+phrases in them; keypair variables contain paths only.
 
 ### 2. Fund the testnet signers
 

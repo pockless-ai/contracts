@@ -5,7 +5,6 @@ import { join } from "node:path"
 import { checked, runCommand, type RunCommand } from "./command"
 import { loadTargets, requiredRpc, type Environment } from "./config"
 import { mergeDeployments } from "./deployments"
-import { env } from "./env"
 import { loadManifest, saveManifest } from "./manifest"
 import { immutablePhrase, confirmExact } from "./safety"
 import { dirname } from "node:path"
@@ -47,7 +46,7 @@ async function onChainProgramHash(
 
 export async function runImmutable(
   environment: Environment,
-  source: Record<string, string | undefined> = env,
+  source: Record<string, string | undefined>,
   run: RunCommand = runCommand
 ) {
   const target = loadTargets(environment, source).find(
@@ -108,12 +107,7 @@ export async function runImmutable(
       `on-chain upgrade authority does not match the supplied authority keypair`
     )
   }
-  const hash = await onChainProgramHash(
-    run,
-    rpc,
-    state.programId,
-    feePayerPath
-  )
+  const hash = await onChainProgramHash(run, rpc, state.programId, feePayerPath)
   if (hash !== state.programHash) {
     throw new Error(
       "on-chain program hash does not match the recorded verified release"

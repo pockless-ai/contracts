@@ -17,9 +17,17 @@ yarn setup
 ```
 
 This installs Foundry, Rust, Solana platform tools (`cargo-build-sbf`), `solana-verify`,
-and initializes `forge-std`. Copy `deploy/.env.example` to the gitignored `deploy/.env`, inject the same
-variables from a secret manager, or export them in the local shell. RPC URLs and signer
-paths are required per target.
+and initializes `forge-std`. Create the gitignored shared and environment-specific files:
+
+```bash
+cp deploy/.env.example deploy/.env
+cp deploy/.env.testnet.example deploy/.env.testnet
+cp deploy/.env.mainnet.example deploy/.env.mainnet
+```
+
+The CLI selects `.env.testnet` or `.env.mainnet` from `--environment`, then loads `.env`
+as a fallback for shared values. Exported shell variables take precedence. This allows one
+stable signer set per environment without editing files between deployments.
 
 Profiles are fixed:
 
@@ -49,6 +57,11 @@ Profiles are fixed:
   balance; their checked-in defaults normally need no changes.
 
 Keypair variables contain file paths, never private keys or recovery phrases.
+
+Put RPC URLs and all signer values in the matching environment profile. Mainnet and testnet
+should use different persistent EVM deployers, Solana fee-payer/authorities, and Solana
+program-ID keypairs. If intentionally reusing one EVM deployer, duplicate its account,
+password, and address in both profiles; no manual switching is required.
 
 Configure an encrypted Foundry signer using one option.
 
@@ -88,11 +101,17 @@ chat, screenshots, `.env`, shell history, or source control.
 Restore the Solana keypair from encrypted storage only for the operation:
 
 ```bash
-chmod 600 /secure/tmp/solana-deployer.json
-chmod 600 /secure/tmp/solana-program-id.json
-export SOLANA_FEE_PAYER_KEYPAIR=/secure/tmp/solana-deployer.json
-export SOLANA_PROGRAM_KEYPAIR=/secure/tmp/solana-program-id.json
+MAINNET_KEY_DIR="$HOME/.config/pockless/mainnet"
+chmod 700 "$MAINNET_KEY_DIR"
+chmod 600 \
+  "$MAINNET_KEY_DIR/solana-deployer.json" \
+  "$MAINNET_KEY_DIR/solana-program-id.json"
+export SOLANA_FEE_PAYER_KEYPAIR="$MAINNET_KEY_DIR/solana-deployer.json"
+export SOLANA_PROGRAM_KEYPAIR="$MAINNET_KEY_DIR/solana-program-id.json"
 ```
+
+On macOS, this location assumes FileVault is enabled. Otherwise, set `MAINNET_KEY_DIR` to a
+writable encrypted volume. `/secure/tmp` is not a standard writable macOS path.
 
 Only the deployer needs SOL. The separate program-ID keypair is an initial-deployment signer
 and must remain unfunded. Mainnet must use production-only keypairs that are never reused
