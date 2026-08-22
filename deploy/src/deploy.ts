@@ -13,7 +13,6 @@ import { fileURLToPath } from "node:url"
 import {
   createPublicClient,
   encodeDeployData,
-  formatEther,
   formatUnits,
   getAddress,
   http,
@@ -56,6 +55,21 @@ const solanaArtifact = join(solanaRoot, "target/deploy/strategy_spend.so")
 const abi = parseAbi(["constructor(address usdcToken_)"])
 let derivedFoundryAccount: { account: string; address: Address } | undefined
 
+type FundingCheck =
+  | {
+      status: "checked"
+      asset: string
+      decimals: number
+      balance: bigint
+      estimated: bigint
+      required: bigint
+      deficit: bigint
+    }
+  | {
+      status: "skipped"
+      reason: string
+    }
+
 export type DeployOptions = {
   environment: Environment
   dryRun: boolean
@@ -91,6 +105,76 @@ function safeError(error: unknown, source: Record<string, string | undefined>) {
   return message
 }
 
+function nativeAsset(target: EvmTarget) {
+  if (target.name === "polygon") return "POL"
+  if (target.name === "bnb") return "BNB"
+  return "ETH"
+}
+
+function fundingTable(
+  rows: readonly {
+    network: string
+    funding?: FundingCheck
+    error?: string
+  }[]
+) {
+  const headers = [
+    "Network",
+    "Balance",
+    "Estimated",
+    "Required",
+    "Deficit",
+    "Status",
+  ]
+  const values = rows.map(({ network, funding, error }) => {
+    if (error) {
+      return [
+        network,
+        "-",
+        "-",
+        "-",
+        "-",
+        `ERROR: ${error.replace(/\s+/g, " ")}`,
+      ]
+    }
+    if (!funding) return [network, "-", "-", "-", "-", "checked"]
+    if (funding.status === "skipped") {
+      return [network, "-", "-", "-", "-", funding.reason]
+    }
+    const amount = (value: bigint) =>
+      `${formatUnits(value, funding.decimals)} ${funding.asset}`
+    return [
+      network,
+      amount(funding.balance),
+      amount(funding.estimated),
+      amount(funding.required),
+      amount(funding.deficit),
+      funding.deficit === 0n ? "ready" : "UNDERFUNDED",
+    ]
+  })
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...values.map((row) => row[index]!.length))
+  )
+  const line = (row: readonly string[]) =>
+    row.map((value, index) => value.padEnd(widths[index]!)).join(" | ")
+  const separator = widths.map((width) => "-".repeat(width)).join("-|-")
+  return [line(headers), separator, ...values.map(line)].join("\n")
+}
+
+function underfundedMessage(
+  target: EvmTarget | SolanaTarget,
+  funding: FundingCheck
+) {
+  if (funding.status !== "checked" || funding.deficit === 0n) {
+    throw new Error(`${target.name} does not have a funding deficit`)
+  }
+  const wallet = target.family === "solana" ? "fee payer" : "deployer"
+  return `${target.name} ${wallet} is underfunded by ${formatUnits(
+    funding.deficit,
+    funding.decimals
+  )} ${funding.asset}`
+}
+
 async function runStage<T>(
   log: (message: string) => void,
   label: string,
@@ -108,6 +192,29 @@ async function runStage<T>(
     log(`${label} failed (${elapsedSeconds}s)`)
     throw error
   }
+}
+
+async function foundryAccount(
+  run: RunCommand,
+  source: Record<string, string | undefined>
+) {
+  const account = required(source, "EVM_FOUNDRY_ACCOUNT")
+  if (!derivedFoundryAccount || derivedFoundryAccount.account !== account) {
+    derivedFoundryAccount = {
+      account,
+      address: getAddress(
+        (
+          await checked(
+            run,
+            "cast",
+            ["wallet", "address", "--account", account],
+            { interactive: true }
+          )
+        ).stdout.trim()
+      ),
+    }
+  }
+  return derivedFoundryAccount
 }
 
 async function sha256(path: string) {
@@ -373,31 +480,14 @@ async function preflightEvm(
   target: EvmTarget,
   options: DeployOptions,
   run: RunCommand,
-  log: (message: string) => void,
   existing?: TargetState
 ) {
   const rpc = requiredRpc(target, options.source)
   const sender = getAddress(required(options.source, "EVM_DEPLOYER_ADDRESS"))
-  const account = required(options.source, "EVM_FOUNDRY_ACCOUNT")
   required(options.source, "ETHERSCAN_API_KEY")
-  if (!derivedFoundryAccount || derivedFoundryAccount.account !== account) {
-    derivedFoundryAccount = {
-      account,
-      address: getAddress(
-        (
-          await checked(
-            run,
-            "cast",
-            ["wallet", "address", "--account", account],
-            {
-              interactive: true,
-            }
-          )
-        ).stdout.trim()
-      ),
-    }
-  }
-  const derivedSender = derivedFoundryAccount.address
+  const derivedAccount = await foundryAccount(run, options.source)
+  const account = derivedAccount.account
+  const derivedSender = derivedAccount.address
   if (derivedSender !== sender) {
     throw new Error(
       `${target.name} EVM_DEPLOYER_ADDRESS does not match the Foundry account`
@@ -436,6 +526,7 @@ async function preflightEvm(
     bytecode: artifact.bytecode!.object!,
     args: [target.usdc],
   })
+  let funding: FundingCheck
   if (
     !existing?.address ||
     !existing.txHash ||
@@ -448,24 +539,27 @@ async function preflightEvm(
       (estimated * BigInt(100 + options.safetyBufferPercent)) / 100n
     const balance = await client.getBalance({ address: sender })
     const deficit = balance >= requiredBalance ? 0n : requiredBalance - balance
-    log(
-      `${target.name}: balance=${formatEther(balance)} ETH (${balance} wei), estimated=${formatEther(estimated)} ETH (${estimated} wei), required=${formatEther(requiredBalance)} ETH (${requiredBalance} wei), deficit=${formatEther(deficit)} ETH (${deficit} wei)`
-    )
-    if (deficit > 0n) {
-      throw new Error(
-        `${target.name} deployer is underfunded by ${formatEther(deficit)} ETH (${deficit} wei)`
-      )
+    funding = {
+      status: "checked",
+      asset: nativeAsset(target),
+      decimals: 18,
+      balance,
+      estimated,
+      required: requiredBalance,
+      deficit,
     }
   } else {
-    log(
-      `${target.name}: deployment transaction is already recorded; funding check skipped`
-    )
+    funding = {
+      status: "skipped",
+      reason: "deployment already recorded",
+    }
   }
   return {
     rpc,
     sender,
     account,
     artifactHash,
+    funding,
   }
 }
 
@@ -537,6 +631,7 @@ async function preflightSolana(
       50_000_000
     )
   )
+  let funding: FundingCheck
   if (!existing?.programId) {
     const balance = await solanaRpc<{ value: number }>(rpc, "getBalance", [
       payerPubkey,
@@ -557,18 +652,20 @@ async function preflightSolana(
     }
     const deficit =
       lamports >= requiredBalance ? 0n : requiredBalance - lamports
-    log(
-      `${target.name}: conservative (not exact) rent estimate=${formatUnits(rent, 9)} SOL (${rent} lamports) for ${conservativeSize} bytes; balance=${formatUnits(lamports, 9)} SOL (${lamports} lamports), required=${formatUnits(requiredBalance, 9)} SOL (${requiredBalance} lamports), deficit=${formatUnits(deficit, 9)} SOL (${deficit} lamports)`
-    )
-    if (deficit > 0n) {
-      throw new Error(
-        `${target.name} fee payer is underfunded by ${formatUnits(deficit, 9)} SOL (${deficit} lamports)`
-      )
+    funding = {
+      status: "checked",
+      asset: "SOL",
+      decimals: 9,
+      balance: lamports,
+      estimated: rent,
+      required: requiredBalance,
+      deficit,
     }
   } else {
-    log(
-      `${target.name}: deployed program is already recorded; full initial-rent check skipped for upgrade`
-    )
+    funding = {
+      status: "skipped",
+      reason: "program already recorded",
+    }
   }
   return {
     rpc,
@@ -578,6 +675,7 @@ async function preflightSolana(
     programKeypair,
     programId,
     artifactHash: await sha256(solanaArtifact),
+    funding,
   }
 }
 
@@ -1011,33 +1109,84 @@ export async function runDeploy(
     assertResumeCompatible(manifest, options.environment, commit)
   }
 
-  const preflights = new Map<string, { artifactHash: string }>()
-  for (const [index, target] of targets.entries()) {
-    const existing = manifest.targets[target.key]
+  if (
+    !dependencies.preflight &&
+    targets.some((target) => target.family === "evm")
+  ) {
+    await runStage(dependencies.log, "Unlocking Foundry deployer account", () =>
+      foundryAccount(dependencies.run, options.source)
+    )
+  }
+
+  type PreflightResult = { artifactHash: string; funding?: FundingCheck }
+  const outcomes = await Promise.all(
+    targets.map(async (target) => {
+      const existing = manifest.targets[target.key]
+      try {
+        const preflight: PreflightResult = await runStage(
+          dependencies.log,
+          `Preflight: ${target.name}`,
+          () =>
+            dependencies.preflight
+              ? dependencies.preflight(target)
+              : target.family === "evm"
+                ? preflightEvm(target, options, dependencies.run, existing)
+                : preflightSolana(
+                    target,
+                    options,
+                    dependencies.run,
+                    dependencies.log,
+                    existing
+                  )
+        )
+        return { target, existing, preflight }
+      } catch (error) {
+        return { target, existing, error }
+      }
+    })
+  )
+
+  dependencies.log(
+    `Funding summary:\n${fundingTable(
+      outcomes.map(({ target, preflight, error }) => ({
+        network: target.name,
+        funding: preflight?.funding,
+        error: error ? safeError(error, options.source) : undefined,
+      }))
+    )}`
+  )
+
+  const failedOutcomes = outcomes.filter(
+    (outcome) =>
+      outcome.error !== undefined ||
+      (outcome.preflight?.funding?.status === "checked" &&
+        outcome.preflight.funding.deficit > 0n)
+  )
+  if (failedOutcomes.length > 0) {
+    const errors = failedOutcomes.map(
+      ({ target, existing, preflight, error }) => {
+        const message =
+          error !== undefined
+            ? safeError(error, options.source)
+            : underfundedMessage(target, preflight!.funding!)
+        manifest.targets[target.key] = {
+          ...(existing ?? { family: target.family, name: target.name }),
+          status: "failed",
+          error: message,
+        }
+        return `${target.name}: ${message}`
+      }
+    )
+    await saveManifest(path, manifest)
+    throw new Error(`preflight failed:\n${errors.join("\n")}`)
+  }
+
+  const preflights = new Map<string, PreflightResult>()
+  for (const outcome of outcomes) {
+    const { target, existing, preflight } = outcome
+    if (!preflight) continue
+    preflights.set(target.key, preflight)
     try {
-      const preflight = await runStage(
-        dependencies.log,
-        `Preflight ${index + 1}/${targets.length}: ${target.name}`,
-        () =>
-          dependencies.preflight
-            ? dependencies.preflight(target)
-            : target.family === "evm"
-              ? preflightEvm(
-                  target,
-                  options,
-                  dependencies.run,
-                  dependencies.log,
-                  existing
-                )
-              : preflightSolana(
-                  target,
-                  options,
-                  dependencies.run,
-                  dependencies.log,
-                  existing
-                )
-      )
-      preflights.set(target.key, preflight)
       const artifactChanged =
         existing?.artifactHash !== undefined &&
         existing.artifactHash !== preflight.artifactHash

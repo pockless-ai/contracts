@@ -244,10 +244,7 @@ test("deployment merge preserves environments and adds release metadata", async 
     const afterUpgrade = JSON.parse(await readFile(path, "utf8"))
     assert.equal(afterUpgrade.evm["84532"].releaseCommit, "def")
     assert.equal(afterUpgrade.evm["84532"].releases.length, 1)
-    assert.equal(
-      afterUpgrade.evm["84532"].releases[0].implementation,
-      testUsdc
-    )
+    assert.equal(afterUpgrade.evm["84532"].releases[0].implementation, testUsdc)
     assert.equal(afterUpgrade.evm["84532"].releases[0].releaseCommit, "abc")
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -309,6 +306,79 @@ test("dry-run completes injected preflight without invoking command or RPC bound
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test(
+  "mainnet dry-run checks targets concurrently and prints one funding summary",
+  { timeout: 2_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pockless-funding-summary-"))
+    const manifestPath = join(directory, "mainnet.json")
+    const logs: string[] = []
+    let started = 0
+    let release: () => void = () => undefined
+    const allStarted = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    try {
+      await runDeploy(
+        {
+          environment: "mainnet",
+          dryRun: true,
+          skipTests: false,
+          skipSolanaVerification: false,
+          operation: "deploy",
+          forceBroadcast: false,
+          safetyBufferPercent: 20,
+          source: {},
+        },
+        {
+          run: async () => {
+            throw new Error("command boundary must not run")
+          },
+          log: (message) => logs.push(message),
+          setup: async () => ({ releaseCommit: "mainnet-commit" }),
+          preflight: async (target) => {
+            started += 1
+            if (started === 7) release()
+            await allStarted
+            return {
+              artifactHash: `hash-${target.key}`,
+              funding: {
+                status: "checked" as const,
+                asset: target.family === "solana" ? "SOL" : "ETH",
+                decimals: target.family === "solana" ? 9 : 18,
+                balance: 2n,
+                estimated: 1n,
+                required: 1n,
+                deficit: 0n,
+              },
+            }
+          },
+          manifestPath,
+        }
+      )
+
+      assert.equal(started, 7)
+      const summaries = logs.filter((message) =>
+        message.startsWith("Funding summary:")
+      )
+      assert.equal(summaries.length, 1)
+      for (const network of [
+        "ethereum",
+        "base",
+        "arbitrum",
+        "optimism",
+        "polygon",
+        "bnb",
+        "mainnet-beta",
+      ]) {
+        assert.match(summaries[0]!, new RegExp(network))
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+)
 
 test("dry-run preserves a completed resumable deployment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pockless-dry-run-resume-"))
