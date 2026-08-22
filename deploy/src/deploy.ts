@@ -91,6 +91,25 @@ function safeError(error: unknown, source: Record<string, string | undefined>) {
   return message
 }
 
+async function runStage<T>(
+  log: (message: string) => void,
+  label: string,
+  task: () => Promise<T>
+) {
+  const startedAt = Date.now()
+  log(`${label}...`)
+  try {
+    const result = await task()
+    const elapsedSeconds = ((Date.now() - startedAt) / 1_000).toFixed(1)
+    log(`${label} complete (${elapsedSeconds}s)`)
+    return result
+  } catch (error) {
+    const elapsedSeconds = ((Date.now() - startedAt) / 1_000).toFixed(1)
+    log(`${label} failed (${elapsedSeconds}s)`)
+    throw error
+  }
+}
+
 async function sha256(path: string) {
   return createHash("sha256")
     .update(await readFile(path))
@@ -916,38 +935,49 @@ export async function runDeploy(
   if (dependencies.setup) {
     commit = (await dependencies.setup()).releaseCommit
   } else {
-    await requireTools(dependencies.run)
-    commit = await releaseInfo(dependencies.run, options.environment)
+    await runStage(dependencies.log, "Checking required deployment tools", () =>
+      requireTools(dependencies.run)
+    )
+    commit = await runStage(dependencies.log, "Validating release commit", () =>
+      releaseInfo(dependencies.run, options.environment)
+    )
     if (!options.skipTests) {
-      await checked(
-        dependencies.run,
-        "forge",
-        ["fmt", "--root", ".", "--check"],
-        { cwd: evmRoot }
+      await runStage(dependencies.log, "Checking EVM formatting", () =>
+        checked(dependencies.run, "forge", ["fmt", "--root", ".", "--check"], {
+          cwd: evmRoot,
+        })
       )
-      await checked(dependencies.run, "forge", ["build", "--root", "."], {
-        cwd: evmRoot,
-      })
-      await checked(dependencies.run, "forge", ["test", "--root", "."], {
-        cwd: evmRoot,
-      })
-      await checked(
-        dependencies.run,
-        "cargo",
-        ["fmt", "--all", "--", "--check"],
-        { cwd: solanaRoot }
+      await runStage(dependencies.log, "Building EVM contracts", () =>
+        checked(dependencies.run, "forge", ["build", "--root", "."], {
+          cwd: evmRoot,
+        })
       )
-      await checked(
-        dependencies.run,
-        "cargo",
-        ["test", "--locked", "-p", "strategy-spend"],
-        { cwd: solanaRoot }
+      await runStage(dependencies.log, "Running EVM tests", () =>
+        checked(dependencies.run, "forge", ["test", "--root", "."], {
+          cwd: evmRoot,
+        })
       )
-      await checked(
-        dependencies.run,
-        "solana-verify",
-        ["build", "."],
-        { cwd: solanaRoot, interactive: true }
+      await runStage(dependencies.log, "Checking Solana formatting", () =>
+        checked(dependencies.run, "cargo", ["fmt", "--all", "--", "--check"], {
+          cwd: solanaRoot,
+        })
+      )
+      await runStage(dependencies.log, "Running Solana tests", () =>
+        checked(
+          dependencies.run,
+          "cargo",
+          ["test", "--locked", "-p", "strategy-spend"],
+          { cwd: solanaRoot }
+        )
+      )
+      await runStage(
+        dependencies.log,
+        "Building reproducible Solana artifact (this can take 5–15 minutes on Apple Silicon)",
+        () =>
+          checked(dependencies.run, "solana-verify", ["build", "."], {
+            cwd: solanaRoot,
+            interactive: true,
+          })
       )
     } else {
       await access(
@@ -982,26 +1012,31 @@ export async function runDeploy(
   }
 
   const preflights = new Map<string, { artifactHash: string }>()
-  for (const target of targets) {
+  for (const [index, target] of targets.entries()) {
     const existing = manifest.targets[target.key]
     try {
-      const preflight = dependencies.preflight
-        ? await dependencies.preflight(target)
-        : target.family === "evm"
-          ? await preflightEvm(
-              target,
-              options,
-              dependencies.run,
-              dependencies.log,
-              existing
-            )
-          : await preflightSolana(
-              target,
-              options,
-              dependencies.run,
-              dependencies.log,
-              existing
-            )
+      const preflight = await runStage(
+        dependencies.log,
+        `Preflight ${index + 1}/${targets.length}: ${target.name}`,
+        () =>
+          dependencies.preflight
+            ? dependencies.preflight(target)
+            : target.family === "evm"
+              ? preflightEvm(
+                  target,
+                  options,
+                  dependencies.run,
+                  dependencies.log,
+                  existing
+                )
+              : preflightSolana(
+                  target,
+                  options,
+                  dependencies.run,
+                  dependencies.log,
+                  existing
+                )
+      )
       preflights.set(target.key, preflight)
       const artifactChanged =
         existing?.artifactHash !== undefined &&
@@ -1024,10 +1059,7 @@ export async function runDeploy(
           `${target.name} is immutable and requires a new program ID for upgrades`
         )
       }
-      if (
-        existing?.status === "complete" &&
-        !dependencies.preflight
-      ) {
+      if (existing?.status === "complete" && !dependencies.preflight) {
         if (target.family === "evm") {
           const evmPreflight = preflight as Awaited<
             ReturnType<typeof preflightEvm>
