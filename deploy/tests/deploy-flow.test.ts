@@ -315,6 +315,7 @@ test(
     const manifestPath = join(directory, "mainnet.json")
     const logs: string[] = []
     let started = 0
+    const attempts = new Map<string, number>()
     let release: () => void = () => undefined
     const allStarted = new Promise<void>((resolve) => {
       release = resolve
@@ -339,8 +340,12 @@ test(
           setup: async () => ({ releaseCommit: "mainnet-commit" }),
           preflight: async (target) => {
             started += 1
+            attempts.set(target.key, (attempts.get(target.key) ?? 0) + 1)
             if (started === 7) release()
             await allStarted
+            if (target.name === "arbitrum" && attempts.get(target.key) === 1) {
+              throw new Error("HTTP request failed: fetch failed")
+            }
             return {
               artifactHash: `hash-${target.key}`,
               funding: {
@@ -355,10 +360,17 @@ test(
             }
           },
           manifestPath,
+          retryDelayMs: 0,
         }
       )
 
-      assert.equal(started, 7)
+      assert.equal(started, 8)
+      assert.equal(attempts.get("42161"), 2)
+      assert.ok(
+        logs.some((message) =>
+          message.includes("arbitrum: transient RPC failure")
+        )
+      )
       const summaries = logs.filter((message) =>
         message.startsWith("Funding summary:")
       )

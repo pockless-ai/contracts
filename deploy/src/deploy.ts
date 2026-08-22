@@ -91,6 +91,7 @@ export type DeployDependencies = {
     target: EvmTarget | SolanaTarget
   ) => Promise<{ artifactHash: string }>
   manifestPath?: string
+  retryDelayMs?: number
 }
 
 function required(source: Record<string, string | undefined>, key: string) {
@@ -101,10 +102,63 @@ function required(source: Record<string, string | undefined>, key: string) {
 
 function safeError(error: unknown, source: Record<string, string | undefined>) {
   let message = error instanceof Error ? error.message : String(error)
-  for (const value of Object.values(source)) {
-    if (value) message = message.split(value).join("<redacted>")
+  for (const [key, value] of Object.entries(source)) {
+    if (
+      value &&
+      (key.endsWith("_RPC_URL") ||
+        key.includes("PASSWORD") ||
+        key.includes("API_KEY") ||
+        key.includes("KEYPAIR"))
+    ) {
+      message = message.split(value).join("<redacted>")
+    }
   }
   return message
+}
+
+function errorChain(error: unknown) {
+  const messages: string[] = []
+  let current: unknown = error
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(
+        `${current.message} ${(current as NodeJS.ErrnoException).code ?? ""}`
+      )
+      current = current.cause
+    } else {
+      messages.push(String(current))
+      break
+    }
+  }
+  return messages.join(" ")
+}
+
+function isTransientRpcError(error: unknown) {
+  return /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|UND_ERR|timeout|timed out|429|502|503|504/i.test(
+    errorChain(error)
+  )
+}
+
+async function retryTransient<T>(
+  log: (message: string) => void,
+  label: string,
+  task: () => Promise<T>,
+  delayMs: number
+) {
+  const attempts = 4
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await task()
+    } catch (error) {
+      if (!isTransientRpcError(error) || attempt === attempts) throw error
+      const waitMs = delayMs * 2 ** (attempt - 1)
+      log(
+        `${label}: transient RPC failure (attempt ${attempt}/${attempts}); retrying in ${waitMs}ms`
+      )
+      await new Promise((resolve) => setTimeout(resolve, waitMs))
+    }
+  }
+  throw new Error(`${label} RPC retry exhausted`)
 }
 
 function nativeAsset(target: EvmTarget) {
@@ -1131,17 +1185,23 @@ export async function runDeploy(
           dependencies.log,
           `Preflight: ${target.name}`,
           () =>
-            dependencies.preflight
-              ? dependencies.preflight(target)
-              : target.family === "evm"
-                ? preflightEvm(target, options, dependencies.run, existing)
-                : preflightSolana(
-                    target,
-                    options,
-                    dependencies.run,
-                    dependencies.log,
-                    existing
-                  )
+            retryTransient(
+              dependencies.log,
+              target.name,
+              () =>
+                dependencies.preflight
+                  ? dependencies.preflight(target)
+                  : target.family === "evm"
+                    ? preflightEvm(target, options, dependencies.run, existing)
+                    : preflightSolana(
+                        target,
+                        options,
+                        dependencies.run,
+                        dependencies.log,
+                        existing
+                      ),
+              dependencies.retryDelayMs ?? 1_000
+            )
         )
         return { target, existing, preflight }
       } catch (error) {
