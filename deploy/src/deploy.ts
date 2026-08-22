@@ -577,11 +577,58 @@ function parseForgeDeployment(output: string) {
   return { address: getAddress(address), txHash: txHash as Hex }
 }
 
+type RuntimeCodeClient = {
+  getCode: (parameters: { address: Address }) => Promise<Hex | undefined>
+}
+
+export async function waitForRuntimeCode(
+  client: RuntimeCodeClient,
+  address: Address,
+  log: (message: string) => void,
+  label: string,
+  options?: { attempts?: number; delayMs?: number }
+) {
+  const attempts = options?.attempts ?? 30
+  const delayMs = options?.delayMs ?? 2_000
+  if (!Number.isSafeInteger(attempts) || attempts <= 0) {
+    throw new Error("runtime code attempts must be a positive integer")
+  }
+  if (!Number.isSafeInteger(delayMs) || delayMs < 0) {
+    throw new Error("runtime code delayMs must be a non-negative integer")
+  }
+  let lastRpcError: unknown
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let attemptError: unknown
+    try {
+      const code = await client.getCode({ address })
+      if (code && code !== "0x") {
+        return code
+      }
+    } catch (error) {
+      attemptError = error
+      lastRpcError = error
+    }
+    if (attempt === attempts) break
+    const status = attemptError
+      ? `runtime code RPC failed: ${attemptError instanceof Error ? attemptError.message : String(attemptError)}`
+      : "runtime code not indexed yet"
+    log(
+      `${label}: ${status} (attempt ${attempt}/${attempts}); retrying in ${delayMs}ms`
+    )
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+  }
+  const diagnostic = lastRpcError
+    ? `; last RPC error: ${lastRpcError instanceof Error ? lastRpcError.message : String(lastRpcError)}`
+    : ""
+  throw new Error(`${label} deployment has no runtime code${diagnostic}`)
+}
+
 async function deployEvm(
   target: EvmTarget,
   preflight: Awaited<ReturnType<typeof preflightEvm>>,
   options: DeployOptions,
   run: RunCommand,
+  log: (message: string) => void,
   onBroadcast: (state: Partial<TargetState>) => Promise<void>,
   existing?: TargetState
 ): Promise<TargetState> {
@@ -627,12 +674,16 @@ async function deployEvm(
   const client = createPublicClient({ transport: http(preflight.rpc) })
   const receipt = await client.waitForTransactionReceipt({
     hash: deployed.txHash,
+    confirmations: 1,
   })
   if (receipt.status !== "success")
     throw new Error(`${target.name} deployment reverted`)
-  const code = await client.getCode({ address: deployed.address })
-  if (!code || code === "0x")
-    throw new Error(`${target.name} deployment has no runtime code`)
+  const code = await waitForRuntimeCode(
+    client,
+    deployed.address,
+    log,
+    target.name
+  )
   const codeHash = keccak256(code)
   const constructorArgs = (
     await checked(run, "cast", [
@@ -1088,6 +1139,7 @@ export async function runDeploy(
               preflight as Awaited<ReturnType<typeof preflightEvm>>,
               options,
               dependencies.run,
+              dependencies.log,
               persistBroadcast,
               existing
             )

@@ -76,6 +76,7 @@ pub fn process_instruction(
             token_amount,
             platform_fee_usdc,
             gas_reimburse_usdc,
+            min_native_out,
             treasury,
             jupiter_data,
             gas_jupiter_data,
@@ -87,6 +88,7 @@ pub fn process_instruction(
             token_amount,
             platform_fee_usdc,
             gas_reimburse_usdc,
+            min_native_out,
             treasury,
             jupiter_data,
             gas_jupiter_data,
@@ -630,6 +632,7 @@ fn execute_swap_with_fees(
     token_amount: u64,
     platform_fee_usdc: u64,
     gas_reimburse_usdc: u64,
+    min_native_out: u64,
     treasury: Pubkey,
     jupiter_data: Vec<u8>,
     gas_jupiter_data: Vec<u8>,
@@ -640,6 +643,7 @@ fn execute_swap_with_fees(
     validate_fee_fields(
         platform_fee_usdc,
         gas_reimburse_usdc,
+        min_native_out,
         treasury,
         &gas_jupiter_data,
     )?;
@@ -663,9 +667,13 @@ fn execute_swap_with_fees(
     let system_program_account = next_account_info(account_iter)?;
     let program_authority = next_account_info(account_iter)?;
     let jupiter_program = next_account_info(account_iter)?;
+    let gas_wsol = next_account_info(account_iter)?;
 
     if !session.is_signer || !relayer.is_signer {
         return Err(StrategySpendError::MissingSignature.into());
+    }
+    if !relayer.is_writable {
+        return Err(StrategySpendError::InvalidAccount.into());
     }
 
     let wallet_config = load_wallet(program_id, owner.key, wallet)?;
@@ -828,6 +836,8 @@ fn execute_swap_with_fees(
             vault_bump,
             relayer,
             gas_reimburse_usdc,
+            min_native_out,
+            gas_wsol,
             &protected_accounts,
         )?;
         perform_buy_swap(
@@ -907,6 +917,8 @@ fn execute_swap_with_fees(
             vault_bump,
             relayer,
             gas_reimburse_usdc,
+            min_native_out,
+            gas_wsol,
             &protected_accounts,
         )?;
     }
@@ -918,6 +930,7 @@ fn execute_swap_with_fees(
 fn validate_fee_fields(
     platform_fee_usdc: u64,
     gas_reimburse_usdc: u64,
+    min_native_out: u64,
     treasury: Pubkey,
     gas_jupiter_data: &[u8],
 ) -> Result<(), ProgramError> {
@@ -925,10 +938,10 @@ fn validate_fee_fields(
         return Err(StrategySpendError::InvalidInstruction.into());
     }
     if gas_reimburse_usdc == 0 {
-        if !gas_jupiter_data.is_empty() {
+        if !gas_jupiter_data.is_empty() || min_native_out != 0 {
             return Err(StrategySpendError::InvalidInstruction.into());
         }
-    } else if gas_jupiter_data.len() <= 1 {
+    } else if gas_jupiter_data.len() <= 1 || min_native_out == 0 {
         return Err(StrategySpendError::InvalidInstruction.into());
     }
     Ok(())
@@ -1002,6 +1015,8 @@ fn reimburse_gas<'a>(
     vault_bump: u8,
     relayer: &AccountInfo<'a>,
     gas_reimburse_usdc: u64,
+    min_native_out: u64,
+    gas_wsol: &AccountInfo<'a>,
     protected_accounts: &[&Pubkey],
 ) -> ProgramResult {
     if gas_reimburse_usdc == 0 {
@@ -1014,6 +1029,21 @@ fn reimburse_gas<'a>(
         .collect();
     let gas_atomic = scale_to_mint_atomic(gas_reimburse_usdc, usdc_mint)?;
     let strategy_usdc_before = token_account_amount(strategy_usdc)?;
+    let expected_gas_wsol =
+        associated_token_address(vault_authority.key, &spl_token::native_mint::id());
+    if gas_wsol.key != &expected_gas_wsol || !gas_wsol.is_writable {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    assert_strategy_vault(
+        gas_wsol,
+        vault_authority.key,
+        &spl_token::native_mint::id(),
+        token_program.key,
+    )?;
+    if token_account_amount(gas_wsol)? != 0 {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    let relayer_lamports_before = relayer.lamports();
 
     invoke_signed(
         &token_instruction::transfer_checked(
@@ -1055,6 +1085,33 @@ fn reimburse_gas<'a>(
         .checked_sub(strategy_usdc_after)
         .ok_or(StrategySpendError::InvalidAccount)?;
     if spent_atomic == 0 || spent_atomic > gas_atomic {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    if token_account_amount(gas_wsol)? < min_native_out {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    invoke_signed(
+        &token_instruction::close_account(
+            token_program.key,
+            gas_wsol.key,
+            relayer.key,
+            vault_authority.key,
+            &[],
+        )?,
+        &[
+            gas_wsol.clone(),
+            relayer.clone(),
+            vault_authority.clone(),
+            token_program.clone(),
+        ],
+        &[&[VAULT_SEED, strategy.key.as_ref(), &[vault_bump]]],
+    )?;
+    let relayer_lamports_after = relayer.lamports();
+    let relayer_payout = relayer_lamports_after
+        .checked_sub(relayer_lamports_before)
+        .ok_or(StrategySpendError::InvalidAccount)?;
+    if relayer_payout < min_native_out {
         return Err(StrategySpendError::InvalidAccount.into());
     }
 

@@ -34,8 +34,9 @@ library SwapBundleIntentHash {
     bytes32 internal constant FEES_TYPEHASH = keccak256(
         "SwapBundleFees(uint256 platformFeeUsdc,address feeRecipient,uint256 gasSellUsdc,uint256 minNativeOut,address gasRecipient,bytes32 gasRouterCalldataHash)"
     );
-    bytes32 internal constant BUNDLE_TYPEHASH =
-        keccak256("SwapBundleIntent(SwapBundleCore core,SwapBundleFees fees)");
+    bytes32 internal constant BUNDLE_TYPEHASH = keccak256(
+        "SwapBundleIntent(SwapBundleCore core,SwapBundleFees fees)SwapBundleCore(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 maxSellAmount,uint256 minBuyAmount,bytes32 routerCalldataHash)SwapBundleFees(uint256 platformFeeUsdc,address feeRecipient,uint256 gasSellUsdc,uint256 minNativeOut,address gasRecipient,bytes32 gasRouterCalldataHash)"
+    );
 
     function digest(SwapBundleIntentPayload memory intent, bytes32 domainSeparator)
         internal
@@ -287,7 +288,7 @@ contract SessionSpend7702 {
         );
 
         (uint256 sellAmount, uint256 buyAmount) =
-            _executeRouterSwap(intent.sellToken, intent.maxSellAmount, routerData);
+            _executeRouterSwap(intent.sellToken, intent.buyToken, intent.maxSellAmount, routerData);
         if (buyAmount < intent.minBuyAmount) revert SlippageExceeded();
 
         _completeSwap(
@@ -353,8 +354,9 @@ contract SessionSpend7702 {
         _chargePlatformFee(intent);
         _reimburseGas(intent, gasRouterCalldata);
 
-        (uint256 sellAmount, uint256 buyAmount) =
-            _executeRouterSwap(intent.sellToken, intent.maxSellAmount, strategyRouterCalldata);
+        (uint256 sellAmount, uint256 buyAmount) = _executeRouterSwap(
+            intent.sellToken, intent.buyToken, intent.maxSellAmount, strategyRouterCalldata
+        );
         if (buyAmount < intent.minBuyAmount) revert SlippageExceeded();
 
         _completeSwap(
@@ -375,8 +377,9 @@ contract SessionSpend7702 {
         bytes memory gasRouterCalldata
     ) private {
         Session storage session = $.sessions[intent.strategyId][intent.sessionKey];
-        (uint256 sellAmount, uint256 buyAmount) =
-            _executeRouterSwap(intent.sellToken, intent.maxSellAmount, strategyRouterCalldata);
+        (uint256 sellAmount, uint256 buyAmount) = _executeRouterSwap(
+            intent.sellToken, intent.buyToken, intent.maxSellAmount, strategyRouterCalldata
+        );
         if (buyAmount < intent.minBuyAmount) revert SlippageExceeded();
 
         int256 realizedPnlUsdc = _applySwapAccounting(
@@ -672,10 +675,10 @@ contract SessionSpend7702 {
 
     function _executeRouterSwap(
         address sellToken,
+        address buyToken,
         uint256 maxSellAmount,
         bytes memory routerCalldata
     ) private returns (uint256 sellAmount, uint256 buyAmount) {
-        address buyToken = _routerBuyToken(routerCalldata);
         uint256 sellBefore = IERC20(sellToken).balanceOf(address(this));
         uint256 buyBefore = buyToken == address(0)
             ? address(this).balance
@@ -705,12 +708,6 @@ contract SessionSpend7702 {
         return args;
     }
 
-    function _routerBuyToken(bytes memory routerCalldata) private pure returns (address buyToken) {
-        (,,,, bytes memory targetCalldata) =
-            abi.decode(_routerArgs(routerCalldata), (address, address, uint256, address, bytes));
-        buyToken = abi.decode(targetCalldata, (address));
-    }
-
     function _chargePlatformFee(SwapBundleIntent calldata intent) private {
         if (intent.platformFeeUsdc == 0) {
             if (intent.feeRecipient != address(0)) revert InvalidIntent();
@@ -734,14 +731,14 @@ contract SessionSpend7702 {
             }
             return;
         }
-        if (intent.gasRecipient == address(0)) revert InvalidIntent();
+        if (intent.gasRecipient != msg.sender) revert InvalidIntent();
 
         uint256 nativeBefore = address(this).balance;
-        _executeRouterSwap(usdcToken, intent.gasSellUsdc, gasRouterCalldata);
+        _executeRouterSwap(usdcToken, address(0), intent.gasSellUsdc, gasRouterCalldata);
         uint256 nativeOut = address(this).balance - nativeBefore;
         if (nativeOut < intent.minNativeOut) revert SlippageExceeded();
 
-        (bool sent,) = intent.gasRecipient.call{value: nativeOut}("");
+        (bool sent,) = msg.sender.call{value: nativeOut}("");
         if (!sent) revert CallFailed("");
 
         emit GasReimbursed(

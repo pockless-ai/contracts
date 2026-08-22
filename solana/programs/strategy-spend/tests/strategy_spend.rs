@@ -2,11 +2,11 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
     entrypoint::ProgramResult,
-    program::invoke,
+    program::{invoke, invoke_signed},
     program_option::COption,
     program_pack::Pack,
     pubkey::Pubkey,
-    system_program,
+    system_instruction, system_program,
 };
 use solana_program_test::{processor, BanksClientError, ProgramTest};
 use solana_sdk::{
@@ -28,6 +28,7 @@ use strategy_spend::state::{
 
 const LIMIT_USDC: u64 = 1_000_000_000;
 const EXPIRES_AT: i64 = 4_102_444_800;
+const GAS_FUNDER_SEED: &[u8] = b"gas-funder";
 
 fn strategy_id(seed: &str) -> [u8; 32] {
     solana_sdk::hash::hash(seed.as_bytes()).to_bytes()
@@ -93,22 +94,49 @@ fn token_account(mint: Pubkey, owner: Pubkey, amount: u64, delegate: Option<Pubk
     }
 }
 
+fn native_token_account(owner: Pubkey, reserve: u64) -> Account {
+    let token = TokenAccount {
+        mint: spl_token::native_mint::id(),
+        owner,
+        amount: 0,
+        delegate: COption::None,
+        state: AccountState::Initialized,
+        is_native: COption::Some(reserve),
+        delegated_amount: 0,
+        close_authority: COption::None,
+    };
+    let mut data = vec![0u8; TokenAccount::LEN];
+    TokenAccount::pack(token, &mut data).unwrap();
+    Account {
+        lamports: reserve,
+        data,
+        owner: spl_token::id(),
+        executable: false,
+        rent_epoch: 0,
+    }
+}
+
 fn mock_jupiter(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
-    if accounts.len() >= 3 && accounts[2].owner == &system_program::id() {
-        mock_gas_swap(accounts, data)
+    if accounts.len() == 7
+        && accounts[3].key == &Pubkey::find_program_address(&[GAS_FUNDER_SEED], _program_id).0
+    {
+        mock_gas_swap(_program_id, accounts, data)
     } else {
         mock_token_swap(accounts, data)
     }
 }
 
-fn mock_gas_swap(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+fn mock_gas_swap(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let accounts = &mut accounts.iter();
     let authority = next_account_info(accounts)?;
     let source = next_account_info(accounts)?;
-    let _relayer = next_account_info(accounts)?;
+    let gas_wsol = next_account_info(accounts)?;
+    let gas_funder = next_account_info(accounts)?;
     let input_mint = next_account_info(accounts)?;
     let token_program = next_account_info(accounts)?;
+    let system_program_account = next_account_info(accounts)?;
     let input_amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let lamports_out = u64::from_le_bytes(data[8..16].try_into().unwrap());
 
     invoke(
         &token_instruction::burn_checked(
@@ -126,6 +154,20 @@ fn mock_gas_swap(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
             authority.clone(),
             token_program.clone(),
         ],
+    )?;
+    let (_, gas_funder_bump) = Pubkey::find_program_address(&[GAS_FUNDER_SEED], program_id);
+    invoke_signed(
+        &system_instruction::transfer(gas_funder.key, gas_wsol.key, lamports_out),
+        &[
+            gas_funder.clone(),
+            gas_wsol.clone(),
+            system_program_account.clone(),
+        ],
+        &[&[GAS_FUNDER_SEED, &[gas_funder_bump]]],
+    )?;
+    invoke(
+        &token_instruction::sync_native(token_program.key, gas_wsol.key)?,
+        &[gas_wsol.clone(), token_program.clone()],
     )
 }
 
@@ -185,6 +227,7 @@ struct TestHarness {
     treasury: Keypair,
     usdc_mint: Pubkey,
     token_mint: Pubkey,
+    gas_funder: Pubkey,
     strategy_id: [u8; 32],
 }
 
@@ -198,6 +241,7 @@ impl TestHarness {
         let treasury = Keypair::new();
         let usdc_mint = Pubkey::new_unique();
         let token_mint = Pubkey::new_unique();
+        let gas_funder = Pubkey::find_program_address(&[GAS_FUNDER_SEED], &jupiter_program).0;
         let strategy_id = strategy_id("strategy-a");
         let strategy = strategy_pda(&program_id, &owner.pubkey(), &strategy_id);
         let vault_authority =
@@ -222,6 +266,20 @@ impl TestHarness {
         );
         program_test.add_account(usdc_mint, mint_account(6, vault_authority, LIMIT_USDC));
         program_test.add_account(token_mint, mint_account(6, vault_authority, 0));
+        program_test.add_account(
+            get_associated_token_address(&vault_authority, &spl_token::native_mint::id()),
+            native_token_account(vault_authority, 1_000_000_000),
+        );
+        program_test.add_account(
+            gas_funder,
+            Account {
+                lamports: 1_000_000_000,
+                data: vec![],
+                owner: system_program::id(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        );
         program_test.add_account(
             get_associated_token_address(&owner.pubkey(), &usdc_mint),
             token_account(
@@ -274,6 +332,7 @@ impl TestHarness {
             treasury,
             usdc_mint,
             token_mint,
+            gas_funder,
             strategy_id,
         };
         (harness, banks_client, payer)
@@ -493,6 +552,7 @@ impl TestHarness {
         actual_output: u64,
         gas_input: u64,
         gas_lamports_out: u64,
+        min_native_out: u64,
     ) -> Instruction {
         let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
         let vault_authority =
@@ -530,7 +590,7 @@ impl TestHarness {
         jupiter_data.extend_from_slice(&actual_output.to_le_bytes());
         let mut gas_jupiter_data = gas_input.to_le_bytes().to_vec();
         gas_jupiter_data.extend_from_slice(&gas_lamports_out.to_le_bytes());
-        let gas_account_count = if gas_reimburse_usdc > 0 { 5u8 } else { 0u8 };
+        let gas_account_count = if gas_reimburse_usdc > 0 { 7u8 } else { 0u8 };
         let mut gas_payload = Vec::new();
         if gas_reimburse_usdc > 0 {
             gas_payload.push(gas_account_count);
@@ -556,14 +616,27 @@ impl TestHarness {
             AccountMeta::new_readonly(system_program::id(), false),
             AccountMeta::new_readonly(program_authority, false),
             AccountMeta::new_readonly(self.jupiter_program, false),
+            if gas_reimburse_usdc > 0 {
+                AccountMeta::new(
+                    get_associated_token_address(&vault_authority, &spl_token::native_mint::id()),
+                    false,
+                )
+            } else {
+                AccountMeta::new(self.relayer.pubkey(), false)
+            },
         ];
         if gas_reimburse_usdc > 0 {
             accounts.extend_from_slice(&[
                 AccountMeta::new_readonly(vault_authority, false),
                 AccountMeta::new(strategy_usdc, false),
-                AccountMeta::new(self.relayer.pubkey(), false),
+                AccountMeta::new(
+                    get_associated_token_address(&vault_authority, &spl_token::native_mint::id()),
+                    false,
+                ),
+                AccountMeta::new(self.gas_funder, false),
                 AccountMeta::new(self.usdc_mint, false),
                 AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(system_program::id(), false),
             ]);
         }
         accounts.extend_from_slice(&[
@@ -584,6 +657,7 @@ impl TestHarness {
                 token_amount,
                 platform_fee_usdc,
                 gas_reimburse_usdc,
+                min_native_out,
                 treasury: self.treasury.pubkey(),
                 jupiter_data,
                 gas_jupiter_data: gas_payload,
@@ -908,6 +982,12 @@ async fn close_strategy_when_flat() {
 async fn execute_swap_with_fees_buy_charges_treasury_and_reduces_capacity() {
     let (h, mut banks_client, payer) = TestHarness::start().await;
     bootstrap(&h, &mut banks_client, &payer).await;
+    let relayer_before = banks_client
+        .get_account(h.relayer.pubkey())
+        .await
+        .unwrap()
+        .unwrap()
+        .lamports;
 
     send(
         &mut banks_client,
@@ -923,10 +1003,18 @@ async fn execute_swap_with_fees_buy_charges_treasury_and_reduces_capacity() {
             100_000_000,
             500_000,
             10_000_000,
+            10_000_000,
         ),
     )
     .await
     .unwrap();
+    let relayer_after = banks_client
+        .get_account(h.relayer.pubkey())
+        .await
+        .unwrap()
+        .unwrap()
+        .lamports;
+    assert!(relayer_after >= relayer_before + 10_000_000);
 
     let state = h.read_strategy(&mut banks_client).await;
     assert_eq!(state.deployed_usdc, 200_000_000);
@@ -940,6 +1028,41 @@ async fn execute_swap_with_fees_buy_charges_treasury_and_reduces_capacity() {
         .unwrap();
     let treasury_token = TokenAccount::unpack(&treasury_account.data).unwrap();
     assert_eq!(treasury_token.amount, 1_000_000);
+}
+
+#[tokio::test]
+async fn execute_swap_with_fees_rejects_gas_below_minimum_atomically() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    let owner_usdc = get_associated_token_address(&h.owner.pubkey(), &h.usdc_mint);
+    let owner_before = banks_client.get_account(owner_usdc).await.unwrap().unwrap();
+    let owner_before = TokenAccount::unpack(&owner_before.data).unwrap().amount;
+
+    assert!(send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.execute_swap_with_fees_ix(
+            true,
+            200_000_000,
+            90_000_000,
+            0,
+            500_000,
+            200_000_000,
+            100_000_000,
+            500_000,
+            10_000_000,
+            10_000_001,
+        ),
+    )
+    .await
+    .is_err());
+
+    let owner_after = banks_client.get_account(owner_usdc).await.unwrap().unwrap();
+    assert_eq!(
+        TokenAccount::unpack(&owner_after.data).unwrap().amount,
+        owner_before
+    );
 }
 
 #[tokio::test]
@@ -960,6 +1083,7 @@ async fn execute_swap_with_fees_buy_rejects_insufficient_deployable_for_fees() {
             LIMIT_USDC,
             100_000_000,
             500_000,
+            10_000_000,
             10_000_000,
         ),
     )
@@ -986,6 +1110,7 @@ async fn execute_swap_with_fees_sell_applies_fees_after_swap() {
             100_000_000,
             0,
             0,
+            0,
         ),
     )
     .await
@@ -997,7 +1122,7 @@ async fn execute_swap_with_fees_sell_applies_fees_after_swap() {
         &[&h.relayer, &h.session],
         h.execute_swap_with_fees_ix(
             false, 75_000_000, 50_000_000, 1_000_000, 500_000, 50_000_000, 80_000_000, 500_000,
-            10_000_000,
+            10_000_000, 10_000_000,
         ),
     )
     .await

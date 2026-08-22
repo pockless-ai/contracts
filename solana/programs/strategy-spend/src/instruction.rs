@@ -36,6 +36,7 @@ pub enum StrategySpendInstruction {
         token_amount: u64,
         platform_fee_usdc: u64,
         gas_reimburse_usdc: u64,
+        min_native_out: u64,
         treasury: Pubkey,
         jupiter_data: Vec<u8>,
         gas_jupiter_data: Vec<u8>,

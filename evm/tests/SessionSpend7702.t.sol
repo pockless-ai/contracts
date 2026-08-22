@@ -75,7 +75,7 @@ contract MockAllowanceHolder {
         external
         returns (bytes memory)
     {
-        address buyToken = abi.decode(data, (address));
+        (, address buyToken) = abi.decode(data, (bytes4, address));
         uint256 numerator = rateNumerator[token][buyToken];
         require(numerator > 0, "rate");
         observedAllowance[token][msg.sender] = MockERC20(token).allowance(msg.sender, address(this));
@@ -728,6 +728,21 @@ contract SessionSpend7702Test is Test {
         assertEq(usdc.balanceOf(address(wallet)), 10_000_000_000 - spend - feeTotal);
     }
 
+    function testGasRecipientMustBeTransactionBroadcaster() public {
+        uint256 spend = 100_000_000;
+        SessionSpend7702.SwapBundleIntent memory intent = _buyBundleIntent(
+            spend, 1, wallet.sessionOf(STRATEGY_A, sessionKey).nonce, PLATFORM_FEE, GAS_SELL, 1
+        );
+        bytes memory strategyCalldata = _execCalldata(address(usdc), spend, address(weth));
+        bytes memory gasCalldata = _execCalldata(address(usdc), GAS_SELL, address(0));
+        intent.routerCalldataHash = keccak256(strategyCalldata);
+        intent.gasRouterCalldataHash = keccak256(gasCalldata);
+
+        vm.prank(address(0xBAD));
+        vm.expectRevert(SessionSpend7702.InvalidIntent.selector);
+        wallet.executeSwapWithFees(intent, strategyCalldata, gasCalldata, _signBundleIntent(intent));
+    }
+
     function testBuyWithFeesAllInLimitIncludesStrategyFeeAndGas() public {
         uint256 spend = LIMIT_USDC - PLATFORM_FEE - GAS_SELL;
         _approveForHolder(address(usdc), spend);
@@ -740,6 +755,7 @@ contract SessionSpend7702Test is Test {
         intent.routerCalldataHash = keccak256(strategyCalldata);
         intent.gasRouterCalldataHash = keccak256(gasCalldata);
 
+        vm.prank(gasRecipient);
         wallet.executeSwapWithFees(intent, strategyCalldata, gasCalldata, _signBundleIntent(intent));
 
         SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
@@ -761,6 +777,7 @@ contract SessionSpend7702Test is Test {
         intent.gasRouterCalldataHash = keccak256(gasCalldata);
 
         vm.expectRevert(SessionSpend7702.SpendLimitExceeded.selector);
+        vm.prank(gasRecipient);
         wallet.executeSwapWithFees(intent, strategyCalldata, gasCalldata, _signBundleIntent(intent));
     }
 
@@ -856,6 +873,7 @@ contract SessionSpend7702Test is Test {
             : bytes("");
         intent.routerCalldataHash = keccak256(strategyCalldata);
         intent.gasRouterCalldataHash = intent.gasSellUsdc > 0 ? keccak256(gasCalldata) : bytes32(0);
+        vm.prank(intent.gasRecipient);
         wallet.executeSwapWithFees(
             intent, strategyCalldata, gasCalldata, _signBundleIntentWithKey(privateKey, intent)
         );
@@ -935,7 +953,9 @@ contract SessionSpend7702Test is Test {
                 _domainSeparator(),
                 keccak256(
                     abi.encode(
-                        keccak256("SwapBundleIntent(SwapBundleCore core,SwapBundleFees fees)"),
+                        keccak256(
+                            "SwapBundleIntent(SwapBundleCore core,SwapBundleFees fees)SwapBundleCore(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 maxSellAmount,uint256 minBuyAmount,bytes32 routerCalldataHash)SwapBundleFees(uint256 platformFeeUsdc,address feeRecipient,uint256 gasSellUsdc,uint256 minNativeOut,address gasRecipient,bytes32 gasRouterCalldataHash)"
+                        ),
                         coreHash,
                         feesHash
                     )
@@ -1031,7 +1051,12 @@ contract SessionSpend7702Test is Test {
         returns (bytes memory)
     {
         return abi.encodeWithSelector(
-            0x2213bc0b, address(0x1111), sellToken, amount, address(0x1111), abi.encode(buyToken)
+            0x2213bc0b,
+            address(0x1111),
+            sellToken,
+            amount,
+            address(0x1111),
+            abi.encode(bytes4(0x12345678), buyToken)
         );
     }
 

@@ -132,17 +132,35 @@ export function encodeExecuteSwapWithFees(input: {
   tokenAmount: bigint
   platformFeeUsdc: bigint
   gasReimburseUsdc: bigint
+  minNativeOut: bigint
   treasury: PublicKey
   jupiterData: Buffer
   gasJupiterData: Buffer
   gasJupiterAccountCount: number
 }) {
-  const gasPayload = Buffer.alloc(1 + input.gasJupiterData.length)
-  gasPayload[0] = input.gasJupiterAccountCount
-  input.gasJupiterData.copy(gasPayload, 1)
+  const hasGas = input.gasReimburseUsdc > 0n
+  if (
+    (!hasGas &&
+      (input.minNativeOut !== 0n ||
+        input.gasJupiterData.length !== 0 ||
+        input.gasJupiterAccountCount !== 0)) ||
+    (hasGas &&
+      (input.minNativeOut <= 0n ||
+        input.gasJupiterData.length === 0 ||
+        input.gasJupiterAccountCount <= 0 ||
+        input.gasJupiterAccountCount > 255))
+  ) {
+    throw new Error("Invalid gas reimbursement encoding.")
+  }
+  const gasPayload = hasGas
+    ? Buffer.concat([
+        Buffer.from([input.gasJupiterAccountCount]),
+        input.gasJupiterData,
+      ])
+    : Buffer.alloc(0)
 
   const data = Buffer.alloc(
-    1 + 1 + 8 + 8 + 8 + 8 + 32 + 4 + input.jupiterData.length + 4 + gasPayload.length
+    1 + 1 + 8 + 8 + 8 + 8 + 8 + 32 + 4 + input.jupiterData.length + 4 + gasPayload.length
   )
   let offset = 0
   data[offset++] = VARIANT.ExecuteSwapWithFees
@@ -154,6 +172,8 @@ export function encodeExecuteSwapWithFees(input: {
   data.writeBigUInt64LE(input.platformFeeUsdc, offset)
   offset += 8
   data.writeBigUInt64LE(input.gasReimburseUsdc, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.minNativeOut, offset)
   offset += 8
   data.set(input.treasury.toBytes(), offset)
   offset += 32

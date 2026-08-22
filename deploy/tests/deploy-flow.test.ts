@@ -11,7 +11,7 @@ import {
 } from "../src/command"
 import { resolveSolanaKeypairs } from "../src/env"
 import { loadTargets } from "../src/config"
-import { runDeploy } from "../src/deploy"
+import { runDeploy, waitForRuntimeCode } from "../src/deploy"
 import { mergeDeployments } from "../src/deployments"
 import {
   assertResumeCompatible,
@@ -27,6 +27,68 @@ import {
 } from "../src/safety"
 
 const testUsdc = "0x1111111111111111111111111111111111111111"
+
+test("runtime code polling retries empty code and succeeds", async () => {
+  let calls = 0
+  const code = await waitForRuntimeCode(
+    {
+      getCode: async () => {
+        calls += 1
+        return calls === 1 ? "0x" : "0x6000"
+      },
+    },
+    testUsdc,
+    () => undefined,
+    "base-sepolia",
+    { attempts: 2, delayMs: 0 }
+  )
+
+  assert.equal(code, "0x6000")
+  assert.equal(calls, 2)
+})
+
+test("runtime code polling retries transient RPC rejection and succeeds", async () => {
+  let calls = 0
+  const logs: string[] = []
+  const code = await waitForRuntimeCode(
+    {
+      getCode: async () => {
+        calls += 1
+        if (calls === 1) throw new Error("temporary gateway failure")
+        return "0x6000"
+      },
+    },
+    testUsdc,
+    (message) => logs.push(message),
+    "base-sepolia",
+    { attempts: 2, delayMs: 0 }
+  )
+
+  assert.equal(code, "0x6000")
+  assert.equal(calls, 2)
+  assert.match(logs[0]!, /temporary gateway failure/)
+})
+
+test("runtime code polling exhaustion reports the last RPC error", async () => {
+  let calls = 0
+  await assert.rejects(
+    waitForRuntimeCode(
+      {
+        getCode: async () => {
+          calls += 1
+          if (calls === 2) throw new Error("RPC rate limit")
+          return "0x"
+        },
+      },
+      testUsdc,
+      () => undefined,
+      "base-sepolia",
+      { attempts: 3, delayMs: 0 }
+    ),
+    /base-sepolia deployment has no runtime code; last RPC error: RPC rate limit/
+  )
+  assert.equal(calls, 3)
+})
 
 test("network profiles enforce canonical mainnet targets and explicit testnet USDC", () => {
   assert.throws(() => loadTargets("testnet", {}), /BASE_SEPOLIA_USDC_ADDRESS/)
