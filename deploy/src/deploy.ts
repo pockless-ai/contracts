@@ -52,6 +52,8 @@ const solanaRoot = join(contractsRoot, "solana")
 const manifestDirectory = join(contractsRoot, "deploy/.deploy")
 const deploymentsPath = join(contractsRoot, "docs/deployments.json")
 const solanaArtifact = join(solanaRoot, "target/deploy/strategy_spend.so")
+// UpgradeableLoaderState::ProgramData: enum tag + slot + authority option/pubkey.
+const upgradeableLoaderProgramDataMetadataBytes = 45
 const abi = parseAbi(["constructor(address usdcToken_)"])
 let derivedFoundryAccount: { account: string; address: Address } | undefined
 
@@ -638,10 +640,12 @@ async function preflightSolana(
       { commitment: "confirmed" },
     ])
     const lamports = BigInt(balance.value)
-    const conservativeSize = (await stat(solanaArtifact)).size * 2 + 4096
+    const programDataSize =
+      (await stat(solanaArtifact)).size +
+      upgradeableLoaderProgramDataMetadataBytes
     const rent = BigInt(
       await solanaRpc<number>(rpc, "getMinimumBalanceForRentExemption", [
-        conservativeSize,
+        programDataSize,
         { commitment: "confirmed" },
       ])
     )
