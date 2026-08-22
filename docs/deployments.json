@@ -60,12 +60,12 @@
       "chainId": 84532,
       "rpc": "https://sepolia.base.org",
       "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-      "implementation": "0x38A43b190D077C7F69E221CA2B76A1412D143385",
+      "implementation": "0xF921fDeA6D77600159Da16841c28BEc28C49f4C5",
       "status": "deployed",
-      "txHash": "0xdba409e99bd959aba2ad5bf2bfabbe1ab8c976d3bcbb667467950c029f246adc",
-      "codeHash": "0xbcc8dfe69cb429956240ccf8d92aa8183d6483314e91b0c8a2cbe95e1036f5a3",
-      "verifiedAt": "2026-08-22T12:00:16.849Z",
-      "releaseCommit": "1cc17cdfa749b7e7f4dcd5486621bba2ceb5fef9",
+      "txHash": "0xc84cf60e51248dffc969dff74b18bb96c7f3ee78a27979aa78f1552fcc59f3b1",
+      "codeHash": "0xd41a0c09cf95f43d562900d1615708b53b3f343f98e02511aa3f362853f50b27",
+      "verifiedAt": "2026-08-22T13:06:55.642Z",
+      "releaseCommit": "79145b229b055ff3f170c8ba3cf991d5bfa675b0",
       "releases": [
         {
           "implementation": "0x92237a6819A07d9373303Ff5bb2835b9916994C4",
@@ -74,6 +74,14 @@
           "verifiedAt": "2026-08-21T17:00:45.470Z",
           "releaseCommit": "fe028472102ac39c5eb4628c814a308ecf252bc7",
           "supersededAt": "2026-08-22T12:00:16.849Z"
+        },
+        {
+          "implementation": "0x38A43b190D077C7F69E221CA2B76A1412D143385",
+          "txHash": "0xdba409e99bd959aba2ad5bf2bfabbe1ab8c976d3bcbb667467950c029f246adc",
+          "codeHash": "0xbcc8dfe69cb429956240ccf8d92aa8183d6483314e91b0c8a2cbe95e1036f5a3",
+          "verifiedAt": "2026-08-22T12:00:16.849Z",
+          "releaseCommit": "1cc17cdfa749b7e7f4dcd5486621bba2ceb5fef9",
+          "supersededAt": "2026-08-22T13:06:55.642Z"
         }
       ]
     }
@@ -94,9 +102,9 @@
       "programId": "3yxrhjrQhqojzQ7CuzKKjiiNsTjRcoqXMJ7q694Xi5To",
       "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
       "status": "deployed",
-      "programHash": "20afba55b3a66fb13212338fa1188b9e4620df3891f67898bb177f8ff1f89100",
-      "verifiedAt": "2026-08-22T12:04:44.190Z",
-      "releaseCommit": "1cc17cdfa749b7e7f4dcd5486621bba2ceb5fef9",
+      "programHash": "22e21d68216492d7d78074bfbb40391be884511553fa0f3b1501a35a8d843a55",
+      "verifiedAt": "2026-08-22T13:11:24.119Z",
+      "releaseCommit": "79145b229b055ff3f170c8ba3cf991d5bfa675b0",
       "releases": [
         {
           "programId": "3yxrhjrQhqojzQ7CuzKKjiiNsTjRcoqXMJ7q694Xi5To",
@@ -104,6 +112,13 @@
           "verifiedAt": "2026-08-21T17:22:42.197Z",
           "releaseCommit": "fe028472102ac39c5eb4628c814a308ecf252bc7",
           "supersededAt": "2026-08-22T12:04:44.190Z"
+        },
+        {
+          "programId": "3yxrhjrQhqojzQ7CuzKKjiiNsTjRcoqXMJ7q694Xi5To",
+          "programHash": "20afba55b3a66fb13212338fa1188b9e4620df3891f67898bb177f8ff1f89100",
+          "verifiedAt": "2026-08-22T12:04:44.190Z",
+          "releaseCommit": "1cc17cdfa749b7e7f4dcd5486621bba2ceb5fef9",
+          "supersededAt": "2026-08-22T13:11:24.119Z"
         }
       ]
     }
