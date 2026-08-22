@@ -78,10 +78,16 @@ contract MockAllowanceHolder {
         address buyToken = abi.decode(data, (address));
         uint256 numerator = rateNumerator[token][buyToken];
         require(numerator > 0, "rate");
-        uint256 buyAmount = (amount * numerator) / 1e18;
         observedAllowance[token][msg.sender] = MockERC20(token).allowance(msg.sender, address(this));
         MockERC20(token).transferFrom(msg.sender, address(this), amount + (pullExtra ? 1 : 0));
         if (revertAfterPull) revert("router failed");
+        if (buyToken == address(0)) {
+            uint256 nativeOut = (amount * numerator) / 1e18;
+            (bool sent,) = msg.sender.call{value: nativeOut}("");
+            require(sent, "native send failed");
+            return "";
+        }
+        uint256 buyAmount = (amount * numerator) / 1e18;
         MockERC20(buyToken).transfer(msg.sender, buyAmount);
         return "";
     }
@@ -106,6 +112,12 @@ contract SessionSpend7702Test is Test {
     uint256 internal constant LIMIT_USDC = 1_000_000_000; // 1_000 USDC (6 decimals)
     uint256 internal constant EXPIRES_AT = 4_102_444_800;
 
+    address internal feeRecipient = address(0xFEE);
+    address internal gasRecipient = address(0x600D);
+    uint256 internal constant PLATFORM_FEE = 1_000_000; // 1 USDC
+    uint256 internal constant GAS_SELL = 500_000; // 0.5 USDC
+    uint256 internal constant NATIVE_RATE = 1e27; // 0.001 ETH per USDC base unit
+
     function setUp() public {
         sessionKey = vm.addr(sessionKeyPrivateKey);
 
@@ -116,15 +128,17 @@ contract SessionSpend7702Test is Test {
         vm.etch(ALLOWANCE_HOLDER, address(holder).code);
         _setRate(address(usdc), address(weth), 1e27);
         _setRate(address(weth), address(usdc), 1e9);
+        _setRate(address(usdc), address(0), NATIVE_RATE);
 
         SessionSpend7702 implementation = new SessionSpend7702(address(usdc));
         address delegatedEoa = vm.addr(0x7702);
         vm.etch(delegatedEoa, address(implementation).code);
-        wallet = SessionSpend7702(delegatedEoa);
+        wallet = SessionSpend7702(payable(delegatedEoa));
 
         usdc.mint(address(wallet), 10_000_000_000);
         usdc.mint(ALLOWANCE_HOLDER, 10_000_000_000);
         weth.mint(ALLOWANCE_HOLDER, 1_000 ether);
+        vm.deal(ALLOWANCE_HOLDER, 1_000 ether);
 
         vm.prank(address(wallet));
         wallet.grant(STRATEGY_A, sessionKey, LIMIT_USDC, EXPIRES_AT);
@@ -367,7 +381,7 @@ contract SessionSpend7702Test is Test {
         address delegatedEoa = vm.addr(0x7703);
         vm.etch(delegatedEoa, address(implementation).code);
 
-        wallet = SessionSpend7702(delegatedEoa);
+        wallet = SessionSpend7702(payable(delegatedEoa));
         usdc = MockERC20(address(usdt));
         usdt.mint(delegatedEoa, 1_000_000_000);
         _setRate(address(usdt), address(weth), 1e27);
@@ -697,7 +711,240 @@ contract SessionSpend7702Test is Test {
         assertEq(wallet.sessionAt(STRATEGY_A, 0), sessionKey);
     }
 
+    // ── executeSwapWithFees buy ──────────────────────────────────────────────
+
+    function testBuyWithFeesChargesTreasuryAndGasRecipient() public {
+        uint256 spend = 100_000_000;
+        uint256 feeTotal = PLATFORM_FEE + GAS_SELL;
+        uint256 nativeOut = (GAS_SELL * NATIVE_RATE) / 1e18;
+
+        _buyWithFees(spend, 0.09 ether, PLATFORM_FEE, GAS_SELL, nativeOut);
+
+        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, spend);
+        assertEq(session.capacityUsdc, LIMIT_USDC - feeTotal);
+        assertEq(usdc.balanceOf(feeRecipient), PLATFORM_FEE);
+        assertEq(gasRecipient.balance, nativeOut);
+        assertEq(usdc.balanceOf(address(wallet)), 10_000_000_000 - spend - feeTotal);
+    }
+
+    function testBuyWithFeesAllInLimitIncludesStrategyFeeAndGas() public {
+        uint256 spend = LIMIT_USDC - PLATFORM_FEE - GAS_SELL;
+        _approveForHolder(address(usdc), spend);
+
+        SessionSpend7702.SwapBundleIntent memory intent = _buyBundleIntent(
+            spend, 1, wallet.sessionOf(STRATEGY_A, sessionKey).nonce, PLATFORM_FEE, GAS_SELL, 1
+        );
+        bytes memory strategyCalldata = _execCalldata(address(usdc), spend, address(weth));
+        bytes memory gasCalldata = _execCalldata(address(usdc), GAS_SELL, address(0));
+        intent.routerCalldataHash = keccak256(strategyCalldata);
+        intent.gasRouterCalldataHash = keccak256(gasCalldata);
+
+        wallet.executeSwapWithFees(intent, strategyCalldata, gasCalldata, _signBundleIntent(intent));
+
+        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, spend);
+        assertEq(session.capacityUsdc, LIMIT_USDC - PLATFORM_FEE - GAS_SELL);
+        assertEq(uint256(session.capacityUsdc) - uint256(session.deployedUsdc), 0);
+    }
+
+    function testBuyWithFeesSpendLimitExceededWhenAllInExceeded() public {
+        uint256 spend = LIMIT_USDC - PLATFORM_FEE - GAS_SELL + 1;
+        _approveForHolder(address(usdc), spend);
+
+        SessionSpend7702.SwapBundleIntent memory intent = _buyBundleIntent(
+            spend, 1, wallet.sessionOf(STRATEGY_A, sessionKey).nonce, PLATFORM_FEE, GAS_SELL, 1
+        );
+        bytes memory strategyCalldata = _execCalldata(address(usdc), spend, address(weth));
+        bytes memory gasCalldata = _execCalldata(address(usdc), GAS_SELL, address(0));
+        intent.routerCalldataHash = keccak256(strategyCalldata);
+        intent.gasRouterCalldataHash = keccak256(gasCalldata);
+
+        vm.expectRevert(SessionSpend7702.SpendLimitExceeded.selector);
+        wallet.executeSwapWithFees(intent, strategyCalldata, gasCalldata, _signBundleIntent(intent));
+    }
+
+    function testBuyWithFeesDoesNotIncreaseDeployedForFees() public {
+        uint256 spend = 100_000_000;
+        _buyWithFees(spend, 0.09 ether, PLATFORM_FEE, GAS_SELL, 1);
+
+        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, spend);
+        assertLt(session.capacityUsdc, LIMIT_USDC);
+    }
+
+    // ── executeSwapWithFees sell ─────────────────────────────────────────────
+
+    function testSellWithFeesExecutesStrategyBeforeChargingFees() public {
+        _buy(200_000_000, 0.2 ether);
+        uint256 treasuryBefore = usdc.balanceOf(feeRecipient);
+        uint256 gasBefore = gasRecipient.balance;
+
+        _sellWithFees(0.2 ether, 1, PLATFORM_FEE, GAS_SELL, 1);
+
+        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, 0);
+        assertEq(session.capacityUsdc, LIMIT_USDC - PLATFORM_FEE - GAS_SELL);
+        assertEq(usdc.balanceOf(feeRecipient), treasuryBefore + PLATFORM_FEE);
+        assertGt(gasRecipient.balance, gasBefore);
+    }
+
+    function testSellWithFeesDeductsCapacityNotDeployed() public {
+        _buy(200_000_000, 0.2 ether);
+        _sellWithFees(0.2 ether, 1, PLATFORM_FEE, GAS_SELL, 1);
+
+        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, 0);
+        assertEq(session.capacityUsdc, LIMIT_USDC - PLATFORM_FEE - GAS_SELL);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    function _buyWithFees(
+        uint256 spend,
+        uint256 minBuy,
+        uint256 platformFee,
+        uint256 gasSell,
+        uint256 minNativeOut
+    ) internal {
+        SessionSpend7702.SwapBundleIntent memory intent = _buyBundleIntent(
+            spend,
+            minBuy,
+            wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+            platformFee,
+            gasSell,
+            minNativeOut
+        );
+        _swapBundle(sessionKeyPrivateKey, intent);
+    }
+
+    function _sellWithFees(
+        uint256 sellAmount,
+        uint256 minBuyUsdc,
+        uint256 platformFee,
+        uint256 gasSell,
+        uint256 minNativeOut
+    ) internal {
+        SessionSpend7702.SwapBundleIntent memory intent =
+            SessionSpend7702.SwapBundleIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+                deadline: EXPIRES_AT,
+                sellToken: address(weth),
+                buyToken: address(usdc),
+                maxSellAmount: sellAmount,
+                minBuyAmount: minBuyUsdc,
+                routerCalldataHash: bytes32(0),
+                platformFeeUsdc: platformFee,
+                feeRecipient: feeRecipient,
+                gasSellUsdc: gasSell,
+                minNativeOut: minNativeOut,
+                gasRecipient: gasRecipient,
+                gasRouterCalldataHash: bytes32(0)
+            });
+        _swapBundle(sessionKeyPrivateKey, intent);
+    }
+
+    function _swapBundle(uint256 privateKey, SessionSpend7702.SwapBundleIntent memory intent)
+        internal
+    {
+        bytes memory strategyCalldata =
+            _execCalldata(intent.sellToken, intent.maxSellAmount, intent.buyToken);
+        bytes memory gasCalldata = intent.gasSellUsdc > 0
+            ? _execCalldata(address(usdc), intent.gasSellUsdc, address(0))
+            : bytes("");
+        intent.routerCalldataHash = keccak256(strategyCalldata);
+        intent.gasRouterCalldataHash = intent.gasSellUsdc > 0 ? keccak256(gasCalldata) : bytes32(0);
+        wallet.executeSwapWithFees(
+            intent, strategyCalldata, gasCalldata, _signBundleIntentWithKey(privateKey, intent)
+        );
+    }
+
+    function _buyBundleIntent(
+        uint256 maxSell,
+        uint256 minBuy,
+        uint256 nonce,
+        uint256 platformFee,
+        uint256 gasSell,
+        uint256 minNativeOut
+    ) internal view returns (SessionSpend7702.SwapBundleIntent memory) {
+        return SessionSpend7702.SwapBundleIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: nonce,
+                deadline: EXPIRES_AT,
+                sellToken: address(usdc),
+                buyToken: address(weth),
+                maxSellAmount: maxSell,
+                minBuyAmount: minBuy,
+                routerCalldataHash: bytes32(0),
+                platformFeeUsdc: platformFee,
+                feeRecipient: feeRecipient,
+                gasSellUsdc: gasSell,
+                minNativeOut: minNativeOut,
+                gasRecipient: gasRecipient,
+                gasRouterCalldataHash: bytes32(0)
+            });
+    }
+
+    function _signBundleIntent(SessionSpend7702.SwapBundleIntent memory intent)
+        internal
+        view
+        returns (bytes memory)
+    {
+        return _signBundleIntentWithKey(sessionKeyPrivateKey, intent);
+    }
+
+    function _signBundleIntentWithKey(
+        uint256 privateKey,
+        SessionSpend7702.SwapBundleIntent memory intent
+    ) internal view returns (bytes memory) {
+        bytes32 coreHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "SwapBundleCore(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 maxSellAmount,uint256 minBuyAmount,bytes32 routerCalldataHash)"
+                ),
+                intent.strategyId,
+                intent.sessionKey,
+                intent.nonce,
+                intent.deadline,
+                intent.sellToken,
+                intent.buyToken,
+                intent.maxSellAmount,
+                intent.minBuyAmount,
+                intent.routerCalldataHash
+            )
+        );
+        bytes32 feesHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "SwapBundleFees(uint256 platformFeeUsdc,address feeRecipient,uint256 gasSellUsdc,uint256 minNativeOut,address gasRecipient,bytes32 gasRouterCalldataHash)"
+                ),
+                intent.platformFeeUsdc,
+                intent.feeRecipient,
+                intent.gasSellUsdc,
+                intent.minNativeOut,
+                intent.gasRecipient,
+                intent.gasRouterCalldataHash
+            )
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                _domainSeparator(),
+                keccak256(
+                    abi.encode(
+                        keccak256("SwapBundleIntent(SwapBundleCore core,SwapBundleFees fees)"),
+                        coreHash,
+                        feesHash
+                    )
+                )
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest);
+        return abi.encodePacked(r, s, v);
+    }
 
     function _expectSwapReverts(bytes4 selector, uint256 nonce) internal {
         _approveForHolder(address(usdc), 10_000_000);

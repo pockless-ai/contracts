@@ -27,6 +27,19 @@ pub enum StrategySpendInstruction {
         token_amount: u64,
         jupiter_data: Vec<u8>,
     },
+    /// Session executes platform fee, gas reimbursement, and one pinned Jupiter swap atomically.
+    /// `gas_jupiter_data` is `[gas_jupiter_account_count: u8][jupiter_ix_data…]`.
+    /// Fee and gas amounts reduce `capacity_usdc`, not `deployed_usdc`.
+    ExecuteSwapWithFees {
+        is_buy: bool,
+        usdc_amount: u64,
+        token_amount: u64,
+        platform_fee_usdc: u64,
+        gas_reimburse_usdc: u64,
+        treasury: Pubkey,
+        jupiter_data: Vec<u8>,
+        gas_jupiter_data: Vec<u8>,
+    },
     /// Owner withdraws tokens from the strategy vault.
     WithdrawAsset { amount: u64 },
     /// Owner closes the strategy after all positions are flat.

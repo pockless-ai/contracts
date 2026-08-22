@@ -19,8 +19,11 @@ export {
   encodeSessionRotate,
   encodeSessionSetLimit,
   encodeExecuteSwap,
+  encodeExecuteSwapWithFees,
   strategyIdFromCuid,
   revokeIntentTypes,
+  swapBundleIntentTypes,
+  swapBundleIntentDomain,
 } from "./evm/session-spend-7702"
 
 export {
@@ -40,6 +43,7 @@ export {
   encodeRotateSession,
   encodeRevoke,
   encodeExecuteSwap as encodeSolanaExecuteSwap,
+  encodeExecuteSwapWithFees as encodeSolanaExecuteSwapWithFees,
   encodeWithdrawAsset,
   encodeCloseStrategy,
   solanaStrategyIdFromCuid,
@@ -48,4 +52,5 @@ export {
 export type {
   RevokeIntentMessage,
   SwapIntentMessage,
+  SwapBundleIntentMessage,
 } from "./evm/session-spend-7702"

@@ -15,8 +15,9 @@ const VARIANT = {
   RotateSession: 3,
   Revoke: 4,
   ExecuteSwap: 5,
-  WithdrawAsset: 6,
-  CloseStrategy: 7,
+  ExecuteSwapWithFees: 6,
+  WithdrawAsset: 7,
+  CloseStrategy: 8,
 } as const
 
 export function solanaStrategyIdFromCuid(strategyCuid: string): Uint8Array {
@@ -122,6 +123,47 @@ export function encodeExecuteSwap(input: {
   data.writeBigUInt64LE(input.tokenAmount, 10)
   data.writeUInt32LE(input.jupiterData.length, 18)
   input.jupiterData.copy(data, 22)
+  return data
+}
+
+export function encodeExecuteSwapWithFees(input: {
+  isBuy: boolean
+  usdcAmount: bigint
+  tokenAmount: bigint
+  platformFeeUsdc: bigint
+  gasReimburseUsdc: bigint
+  treasury: PublicKey
+  jupiterData: Buffer
+  gasJupiterData: Buffer
+  gasJupiterAccountCount: number
+}) {
+  const gasPayload = Buffer.alloc(1 + input.gasJupiterData.length)
+  gasPayload[0] = input.gasJupiterAccountCount
+  input.gasJupiterData.copy(gasPayload, 1)
+
+  const data = Buffer.alloc(
+    1 + 1 + 8 + 8 + 8 + 8 + 32 + 4 + input.jupiterData.length + 4 + gasPayload.length
+  )
+  let offset = 0
+  data[offset++] = VARIANT.ExecuteSwapWithFees
+  data[offset++] = input.isBuy ? 1 : 0
+  data.writeBigUInt64LE(input.usdcAmount, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.tokenAmount, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.platformFeeUsdc, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.gasReimburseUsdc, offset)
+  offset += 8
+  data.set(input.treasury.toBytes(), offset)
+  offset += 32
+  data.writeUInt32LE(input.jupiterData.length, offset)
+  offset += 4
+  input.jupiterData.copy(data, offset)
+  offset += input.jupiterData.length
+  data.writeUInt32LE(gasPayload.length, offset)
+  offset += 4
+  gasPayload.copy(data, offset)
   return data
 }
 

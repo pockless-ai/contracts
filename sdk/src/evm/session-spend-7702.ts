@@ -100,6 +100,38 @@ export const sessionSpend7702Abi = [
     ],
     outputs: [],
   },
+  {
+    type: "function",
+    name: "executeSwapWithFees",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "intent",
+        type: "tuple",
+        components: [
+          { name: "strategyId", type: "bytes32" },
+          { name: "sessionKey", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" },
+          { name: "sellToken", type: "address" },
+          { name: "buyToken", type: "address" },
+          { name: "maxSellAmount", type: "uint256" },
+          { name: "minBuyAmount", type: "uint256" },
+          { name: "routerCalldataHash", type: "bytes32" },
+          { name: "platformFeeUsdc", type: "uint256" },
+          { name: "feeRecipient", type: "address" },
+          { name: "gasSellUsdc", type: "uint256" },
+          { name: "minNativeOut", type: "uint256" },
+          { name: "gasRecipient", type: "address" },
+          { name: "gasRouterCalldataHash", type: "bytes32" },
+        ],
+      },
+      { name: "strategyRouterCalldata", type: "bytes" },
+      { name: "gasRouterCalldata", type: "bytes" },
+      { name: "sessionSignature", type: "bytes" },
+    ],
+    outputs: [],
+  },
 ] as const
 
 export type SwapIntentMessage = {
@@ -112,6 +144,28 @@ export type SwapIntentMessage = {
   maxSellAmount: bigint
   minBuyAmount: bigint
   routerCalldataHash: Hex
+}
+
+export type SwapBundleIntentMessage = {
+  core: {
+    strategyId: Hex
+    sessionKey: Address
+    nonce: bigint
+    deadline: bigint
+    sellToken: Address
+    buyToken: Address
+    maxSellAmount: bigint
+    minBuyAmount: bigint
+    routerCalldataHash: Hex
+  }
+  fees: {
+    platformFeeUsdc: bigint
+    feeRecipient: Address
+    gasSellUsdc: bigint
+    minNativeOut: bigint
+    gasRecipient: Address
+    gasRouterCalldataHash: Hex
+  }
 }
 
 export type RevokeIntentMessage = {
@@ -135,6 +189,41 @@ export function swapIntentTypes() {
       { name: "routerCalldataHash", type: "bytes32" },
     ],
   } as const
+}
+
+export function swapBundleIntentTypes() {
+  return {
+    SwapBundleIntent: [
+      { name: "core", type: "SwapBundleCore" },
+      { name: "fees", type: "SwapBundleFees" },
+    ],
+    SwapBundleCore: [
+      { name: "strategyId", type: "bytes32" },
+      { name: "sessionKey", type: "address" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "sellToken", type: "address" },
+      { name: "buyToken", type: "address" },
+      { name: "maxSellAmount", type: "uint256" },
+      { name: "minBuyAmount", type: "uint256" },
+      { name: "routerCalldataHash", type: "bytes32" },
+    ],
+    SwapBundleFees: [
+      { name: "platformFeeUsdc", type: "uint256" },
+      { name: "feeRecipient", type: "address" },
+      { name: "gasSellUsdc", type: "uint256" },
+      { name: "minNativeOut", type: "uint256" },
+      { name: "gasRecipient", type: "address" },
+      { name: "gasRouterCalldataHash", type: "bytes32" },
+    ],
+  } as const
+}
+
+export function swapBundleIntentDomain(input: {
+  chainId: number
+  verifyingContract: Address
+}) {
+  return swapIntentDomain(input)
 }
 
 export function revokeIntentTypes() {
@@ -255,6 +344,40 @@ export function encodeExecuteSwap(input: {
         routerCalldataHash: input.intent.routerCalldataHash,
       },
       input.routerCalldata,
+      input.sessionSignature,
+    ],
+  })
+}
+
+export function encodeExecuteSwapWithFees(input: {
+  intent: SwapBundleIntentMessage
+  strategyRouterCalldata: Hex
+  gasRouterCalldata: Hex
+  sessionSignature: Hex
+}) {
+  return encodeFunctionData({
+    abi: sessionSpend7702Abi,
+    functionName: "executeSwapWithFees",
+    args: [
+      {
+        strategyId: input.intent.core.strategyId,
+        sessionKey: input.intent.core.sessionKey,
+        nonce: input.intent.core.nonce,
+        deadline: input.intent.core.deadline,
+        sellToken: input.intent.core.sellToken,
+        buyToken: input.intent.core.buyToken,
+        maxSellAmount: input.intent.core.maxSellAmount,
+        minBuyAmount: input.intent.core.minBuyAmount,
+        routerCalldataHash: input.intent.core.routerCalldataHash,
+        platformFeeUsdc: input.intent.fees.platformFeeUsdc,
+        feeRecipient: input.intent.fees.feeRecipient,
+        gasSellUsdc: input.intent.fees.gasSellUsdc,
+        minNativeOut: input.intent.fees.minNativeOut,
+        gasRecipient: input.intent.fees.gasRecipient,
+        gasRouterCalldataHash: input.intent.fees.gasRouterCalldataHash,
+      },
+      input.strategyRouterCalldata,
+      input.gasRouterCalldata,
       input.sessionSignature,
     ],
   })

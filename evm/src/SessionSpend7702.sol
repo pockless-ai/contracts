@@ -9,6 +9,74 @@ interface IERC20 {
     function decimals() external view returns (uint8);
 }
 
+struct SwapBundleIntentPayload {
+    bytes32 strategyId;
+    address sessionKey;
+    uint256 nonce;
+    uint256 deadline;
+    address sellToken;
+    address buyToken;
+    uint256 maxSellAmount;
+    uint256 minBuyAmount;
+    bytes32 routerCalldataHash;
+    uint256 platformFeeUsdc;
+    address feeRecipient;
+    uint256 gasSellUsdc;
+    uint256 minNativeOut;
+    address gasRecipient;
+    bytes32 gasRouterCalldataHash;
+}
+
+library SwapBundleIntentHash {
+    bytes32 internal constant CORE_TYPEHASH = keccak256(
+        "SwapBundleCore(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 maxSellAmount,uint256 minBuyAmount,bytes32 routerCalldataHash)"
+    );
+    bytes32 internal constant FEES_TYPEHASH = keccak256(
+        "SwapBundleFees(uint256 platformFeeUsdc,address feeRecipient,uint256 gasSellUsdc,uint256 minNativeOut,address gasRecipient,bytes32 gasRouterCalldataHash)"
+    );
+    bytes32 internal constant BUNDLE_TYPEHASH =
+        keccak256("SwapBundleIntent(SwapBundleCore core,SwapBundleFees fees)");
+
+    function digest(SwapBundleIntentPayload memory intent, bytes32 domainSeparator)
+        internal
+        pure
+        returns (bytes32)
+    {
+        bytes32 coreHash = keccak256(
+            abi.encode(
+                CORE_TYPEHASH,
+                intent.strategyId,
+                intent.sessionKey,
+                intent.nonce,
+                intent.deadline,
+                intent.sellToken,
+                intent.buyToken,
+                intent.maxSellAmount,
+                intent.minBuyAmount,
+                intent.routerCalldataHash
+            )
+        );
+        bytes32 feesHash = keccak256(
+            abi.encode(
+                FEES_TYPEHASH,
+                intent.platformFeeUsdc,
+                intent.feeRecipient,
+                intent.gasSellUsdc,
+                intent.minNativeOut,
+                intent.gasRecipient,
+                intent.gasRouterCalldataHash
+            )
+        );
+        return keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                domainSeparator,
+                keccak256(abi.encode(BUNDLE_TYPEHASH, coreHash, feesHash))
+            )
+        );
+    }
+}
+
 /// @title SessionSpend7702
 /// @notice ERC-7702 implementation for per-strategy session keys that may swap
 ///         through a pinned 0x AllowanceHolder. Storage is ERC-7201 namespaced.
@@ -56,6 +124,24 @@ contract SessionSpend7702 {
         uint256 maxSellAmount;
         uint256 minBuyAmount;
         bytes32 routerCalldataHash;
+    }
+
+    struct SwapBundleIntent {
+        bytes32 strategyId;
+        address sessionKey;
+        uint256 nonce;
+        uint256 deadline;
+        address sellToken;
+        address buyToken;
+        uint256 maxSellAmount;
+        uint256 minBuyAmount;
+        bytes32 routerCalldataHash;
+        uint256 platformFeeUsdc;
+        address feeRecipient;
+        uint256 gasSellUsdc;
+        uint256 minNativeOut;
+        address gasRecipient;
+        bytes32 gasRouterCalldataHash;
     }
 
     struct RevokeIntent {
@@ -120,6 +206,19 @@ contract SessionSpend7702 {
         uint256 buyAmount,
         int256 realizedPnlUsdc
     );
+    event PlatformFeeCharged(
+        bytes32 indexed strategyId,
+        address indexed sessionKey,
+        address indexed feeRecipient,
+        uint256 platformFeeUsdc
+    );
+    event GasReimbursed(
+        bytes32 indexed strategyId,
+        address indexed sessionKey,
+        address indexed gasRecipient,
+        uint256 gasSellUsdc,
+        uint256 nativeOut
+    );
 
     modifier onlyOwner() {
         if (msg.sender != address(this)) revert NotOwner();
@@ -139,6 +238,8 @@ contract SessionSpend7702 {
         usdcToken = usdcToken_;
         usdcDecimals = IERC20(usdcToken_).decimals();
     }
+
+    receive() external payable {}
 
     function grant(bytes32 strategyId, address key, uint256 limitUsdc, uint256 expiresAt)
         external
@@ -172,54 +273,126 @@ contract SessionSpend7702 {
         bytes calldata routerCalldata,
         bytes calldata sessionSignature
     ) external nonReentrant {
-        if (routerCalldata.length < 4) revert SelectorNotAllowed();
-        if (bytes4(routerCalldata[:4]) != EXEC_SELECTOR) revert SelectorNotAllowed();
-        if (keccak256(routerCalldata) != intent.routerCalldataHash) revert InvalidIntent();
-        (
-            address operator,
-            address calldataSellToken,
-            uint256 calldataSellAmount,
-            address target,
-            bytes memory targetCalldata
-        ) = abi.decode(routerCalldata[4:], (address, address, uint256, address, bytes));
-        if (
-            calldataSellToken != intent.sellToken || calldataSellAmount != intent.maxSellAmount
-                || operator == address(0) || target == address(0) || operator != target
-        ) revert RouterFieldsMismatch();
-        if (targetCalldata.length < 4) revert RouterFieldsMismatch();
-        if (block.timestamp > intent.deadline) revert IntentExpired();
+        bytes memory routerData = routerCalldata;
+        _validateRouterCalldata(
+            routerData, intent.routerCalldataHash, intent.sellToken, intent.maxSellAmount
+        );
+        _validateSignedSwap(
+            intent.strategyId,
+            intent.sessionKey,
+            intent.nonce,
+            intent.deadline,
+            _swapIntentDigest(intent),
+            sessionSignature
+        );
 
-        Layout storage $ = _layout();
+        (uint256 sellAmount, uint256 buyAmount) =
+            _executeRouterSwap(intent.sellToken, intent.maxSellAmount, routerData);
+        if (buyAmount < intent.minBuyAmount) revert SlippageExceeded();
+
+        _completeSwap(
+            _layout(),
+            intent.strategyId,
+            intent.sessionKey,
+            intent.sellToken,
+            intent.buyToken,
+            sellAmount,
+            buyAmount
+        );
+    }
+
+    function executeSwapWithFees(
+        SwapBundleIntent calldata intent,
+        bytes calldata strategyRouterCalldata,
+        bytes calldata gasRouterCalldata,
+        bytes calldata sessionSignature
+    ) external nonReentrant {
+        bytes memory strategyCalldata = strategyRouterCalldata;
+        bytes memory gasCalldata = gasRouterCalldata;
+
+        _validateRouterCalldata(
+            strategyCalldata, intent.routerCalldataHash, intent.sellToken, intent.maxSellAmount
+        );
+        _validateGasRouterCalldata(gasCalldata, intent.gasRouterCalldataHash, intent.gasSellUsdc);
+        _validateSignedSwap(
+            intent.strategyId,
+            intent.sessionKey,
+            intent.nonce,
+            intent.deadline,
+            SwapBundleIntentHash.digest(_bundlePayload(intent), _domainSeparator()),
+            sessionSignature
+        );
+
+        if (intent.sellToken == usdcToken && intent.buyToken != usdcToken) {
+            _executeBuyBundle(_layout(), intent, strategyCalldata, gasCalldata);
+            return;
+        }
+        if (intent.buyToken == usdcToken && intent.sellToken != usdcToken) {
+            _executeSellBundle(_layout(), intent, strategyCalldata, gasCalldata);
+            return;
+        }
+        revert InvalidIntent();
+    }
+
+    function _executeBuyBundle(
+        Layout storage $,
+        SwapBundleIntent calldata intent,
+        bytes memory strategyRouterCalldata,
+        bytes memory gasRouterCalldata
+    ) private {
         Session storage session = $.sessions[intent.strategyId][intent.sessionKey];
-        _assertActive(session);
-        if (session.nonce != intent.nonce) revert NonceMismatch();
+        uint256 feeCapacityCost =
+            _normalizeUsdc(intent.platformFeeUsdc) + _normalizeUsdc(intent.gasSellUsdc);
+        uint256 strategyCost = _normalizeUsdc(intent.maxSellAmount);
+        uint256 deployable = uint256(session.capacityUsdc) - uint256(session.deployedUsdc);
+        if (strategyCost + feeCapacityCost > deployable) revert SpendLimitExceeded();
 
-        bytes32 digest = _swapIntentDigest(intent);
-        if (_recover(digest, sessionSignature) != intent.sessionKey) revert InvalidSignature();
+        if (feeCapacityCost > 0) {
+            session.capacityUsdc = uint128(uint256(session.capacityUsdc) - feeCapacityCost);
+        }
+        _chargePlatformFee(intent);
+        _reimburseGas(intent, gasRouterCalldata);
 
-        uint256 sellBefore = IERC20(intent.sellToken).balanceOf(address(this));
-        uint256 buyBefore = IERC20(intent.buyToken).balanceOf(address(this));
+        (uint256 sellAmount, uint256 buyAmount) =
+            _executeRouterSwap(intent.sellToken, intent.maxSellAmount, strategyRouterCalldata);
+        if (buyAmount < intent.minBuyAmount) revert SlippageExceeded();
 
-        _forceApprove(intent.sellToken, ALLOWANCE_HOLDER, intent.maxSellAmount);
-        (bool ok, bytes memory result) = ALLOWANCE_HOLDER.call(routerCalldata);
-        if (!ok) revert CallFailed(result);
-        _forceApprove(intent.sellToken, ALLOWANCE_HOLDER, 0);
+        _completeSwap(
+            $,
+            intent.strategyId,
+            intent.sessionKey,
+            intent.sellToken,
+            intent.buyToken,
+            sellAmount,
+            buyAmount
+        );
+    }
 
-        uint256 sellAfter = IERC20(intent.sellToken).balanceOf(address(this));
-        uint256 buyAfter = IERC20(intent.buyToken).balanceOf(address(this));
-
-        uint256 sellAmount = sellBefore - sellAfter;
-        uint256 buyAmount = buyAfter - buyBefore;
-        if (sellAmount == 0 || buyAmount == 0) revert InvalidIntent();
-        if (sellAmount > intent.maxSellAmount) revert SlippageExceeded();
+    function _executeSellBundle(
+        Layout storage $,
+        SwapBundleIntent calldata intent,
+        bytes memory strategyRouterCalldata,
+        bytes memory gasRouterCalldata
+    ) private {
+        Session storage session = $.sessions[intent.strategyId][intent.sessionKey];
+        (uint256 sellAmount, uint256 buyAmount) =
+            _executeRouterSwap(intent.sellToken, intent.maxSellAmount, strategyRouterCalldata);
         if (buyAmount < intent.minBuyAmount) revert SlippageExceeded();
 
         int256 realizedPnlUsdc = _applySwapAccounting(
             $, intent.strategyId, session, intent.sellToken, intent.buyToken, sellAmount, buyAmount
         );
 
-        session.nonce += 1;
+        uint256 feeCapacityCost =
+            _normalizeUsdc(intent.platformFeeUsdc) + _normalizeUsdc(intent.gasSellUsdc);
+        if (feeCapacityCost > 0) {
+            if (feeCapacityCost > session.capacityUsdc) revert SpendLimitExceeded();
+            session.capacityUsdc = uint128(uint256(session.capacityUsdc) - feeCapacityCost);
+        }
+        _chargePlatformFee(intent);
+        _reimburseGas(intent, gasRouterCalldata);
 
+        session.nonce += 1;
         emit SwapExecuted(
             intent.strategyId,
             intent.sessionKey,
@@ -228,6 +401,40 @@ contract SessionSpend7702 {
             sellAmount,
             buyAmount,
             realizedPnlUsdc
+        );
+    }
+
+    function _validateSignedSwap(
+        bytes32 strategyId,
+        address sessionKey,
+        uint256 nonce,
+        uint256 deadline,
+        bytes32 digest,
+        bytes calldata sessionSignature
+    ) private view {
+        if (block.timestamp > deadline) revert IntentExpired();
+        Session storage session = _layout().sessions[strategyId][sessionKey];
+        _assertActive(session);
+        if (session.nonce != nonce) revert NonceMismatch();
+        if (_recover(digest, sessionSignature) != sessionKey) revert InvalidSignature();
+    }
+
+    function _completeSwap(
+        Layout storage $,
+        bytes32 strategyId,
+        address sessionKey,
+        address sellToken,
+        address buyToken,
+        uint256 sellAmount,
+        uint256 buyAmount
+    ) private {
+        Session storage session = $.sessions[strategyId][sessionKey];
+        int256 realizedPnlUsdc = _applySwapAccounting(
+            $, strategyId, session, sellToken, buyToken, sellAmount, buyAmount
+        );
+        session.nonce += 1;
+        emit SwapExecuted(
+            strategyId, sessionKey, sellToken, buyToken, sellAmount, buyAmount, realizedPnlUsdc
         );
     }
 
@@ -420,6 +627,128 @@ contract SessionSpend7702 {
         return amount * (10 ** (6 - decimals));
     }
 
+    function _routerSelector(bytes memory routerCalldata) private pure returns (bytes4 selector) {
+        assembly {
+            selector := mload(add(routerCalldata, 32))
+        }
+    }
+
+    function _validateRouterCalldata(
+        bytes memory routerCalldata,
+        bytes32 routerCalldataHash,
+        address sellToken,
+        uint256 maxSellAmount
+    ) private pure {
+        if (routerCalldata.length < 4) revert SelectorNotAllowed();
+        if (_routerSelector(routerCalldata) != EXEC_SELECTOR) revert SelectorNotAllowed();
+        if (keccak256(routerCalldata) != routerCalldataHash) revert InvalidIntent();
+        (
+            address operator,
+            address calldataSellToken,
+            uint256 calldataSellAmount,
+            address target,
+            bytes memory targetCalldata
+        ) = abi.decode(_routerArgs(routerCalldata), (address, address, uint256, address, bytes));
+        if (
+            calldataSellToken != sellToken || calldataSellAmount != maxSellAmount
+                || operator == address(0) || target == address(0) || operator != target
+        ) revert RouterFieldsMismatch();
+        if (targetCalldata.length < 4) revert RouterFieldsMismatch();
+    }
+
+    function _validateGasRouterCalldata(
+        bytes memory gasRouterCalldata,
+        bytes32 gasRouterCalldataHash,
+        uint256 gasSellUsdc
+    ) private view {
+        if (gasSellUsdc == 0) {
+            if (gasRouterCalldata.length != 0 || gasRouterCalldataHash != bytes32(0)) {
+                revert InvalidIntent();
+            }
+            return;
+        }
+        _validateRouterCalldata(gasRouterCalldata, gasRouterCalldataHash, usdcToken, gasSellUsdc);
+    }
+
+    function _executeRouterSwap(
+        address sellToken,
+        uint256 maxSellAmount,
+        bytes memory routerCalldata
+    ) private returns (uint256 sellAmount, uint256 buyAmount) {
+        address buyToken = _routerBuyToken(routerCalldata);
+        uint256 sellBefore = IERC20(sellToken).balanceOf(address(this));
+        uint256 buyBefore = buyToken == address(0)
+            ? address(this).balance
+            : IERC20(buyToken).balanceOf(address(this));
+
+        _forceApprove(sellToken, ALLOWANCE_HOLDER, maxSellAmount);
+        (bool ok, bytes memory result) = ALLOWANCE_HOLDER.call(routerCalldata);
+        if (!ok) revert CallFailed(result);
+        _forceApprove(sellToken, ALLOWANCE_HOLDER, 0);
+
+        uint256 sellAfter = IERC20(sellToken).balanceOf(address(this));
+        uint256 buyAfter = buyToken == address(0)
+            ? address(this).balance
+            : IERC20(buyToken).balanceOf(address(this));
+
+        sellAmount = sellBefore - sellAfter;
+        buyAmount = buyAfter - buyBefore;
+        if (sellAmount == 0 || buyAmount == 0) revert InvalidIntent();
+        if (sellAmount > maxSellAmount) revert SlippageExceeded();
+    }
+
+    function _routerArgs(bytes memory routerCalldata) private pure returns (bytes memory) {
+        bytes memory args = new bytes(routerCalldata.length - 4);
+        for (uint256 i = 0; i < args.length; ++i) {
+            args[i] = routerCalldata[i + 4];
+        }
+        return args;
+    }
+
+    function _routerBuyToken(bytes memory routerCalldata) private pure returns (address buyToken) {
+        (,,,, bytes memory targetCalldata) =
+            abi.decode(_routerArgs(routerCalldata), (address, address, uint256, address, bytes));
+        buyToken = abi.decode(targetCalldata, (address));
+    }
+
+    function _chargePlatformFee(SwapBundleIntent calldata intent) private {
+        if (intent.platformFeeUsdc == 0) {
+            if (intent.feeRecipient != address(0)) revert InvalidIntent();
+            return;
+        }
+        if (intent.feeRecipient == address(0)) revert InvalidIntent();
+        if (!IERC20(usdcToken).transfer(intent.feeRecipient, intent.platformFeeUsdc)) {
+            revert CallFailed("");
+        }
+        emit PlatformFeeCharged(
+            intent.strategyId, intent.sessionKey, intent.feeRecipient, intent.platformFeeUsdc
+        );
+    }
+
+    function _reimburseGas(SwapBundleIntent calldata intent, bytes memory gasRouterCalldata)
+        private
+    {
+        if (intent.gasSellUsdc == 0) {
+            if (intent.minNativeOut > 0 || intent.gasRecipient != address(0)) {
+                revert InvalidIntent();
+            }
+            return;
+        }
+        if (intent.gasRecipient == address(0)) revert InvalidIntent();
+
+        uint256 nativeBefore = address(this).balance;
+        _executeRouterSwap(usdcToken, intent.gasSellUsdc, gasRouterCalldata);
+        uint256 nativeOut = address(this).balance - nativeBefore;
+        if (nativeOut < intent.minNativeOut) revert SlippageExceeded();
+
+        (bool sent,) = intent.gasRecipient.call{value: nativeOut}("");
+        if (!sent) revert CallFailed("");
+
+        emit GasReimbursed(
+            intent.strategyId, intent.sessionKey, intent.gasRecipient, intent.gasSellUsdc, nativeOut
+        );
+    }
+
     function _forceApprove(address token, address spender, uint256 amount) private {
         if (_tryApprove(token, spender, amount)) return;
         if (!_tryApprove(token, spender, 0) || !_tryApprove(token, spender, amount)) {
@@ -456,6 +785,30 @@ contract SessionSpend7702 {
         if ($.sessionKeyIndex[strategyId][key] != 0) return;
         $.sessionKeys[strategyId].push(key);
         $.sessionKeyIndex[strategyId][key] = $.sessionKeys[strategyId].length;
+    }
+
+    function _bundlePayload(SwapBundleIntent calldata intent)
+        private
+        pure
+        returns (SwapBundleIntentPayload memory payload)
+    {
+        payload = SwapBundleIntentPayload({
+            strategyId: intent.strategyId,
+            sessionKey: intent.sessionKey,
+            nonce: intent.nonce,
+            deadline: intent.deadline,
+            sellToken: intent.sellToken,
+            buyToken: intent.buyToken,
+            maxSellAmount: intent.maxSellAmount,
+            minBuyAmount: intent.minBuyAmount,
+            routerCalldataHash: intent.routerCalldataHash,
+            platformFeeUsdc: intent.platformFeeUsdc,
+            feeRecipient: intent.feeRecipient,
+            gasSellUsdc: intent.gasSellUsdc,
+            minNativeOut: intent.minNativeOut,
+            gasRecipient: intent.gasRecipient,
+            gasRouterCalldataHash: intent.gasRouterCalldataHash
+        });
     }
 
     function _swapIntentDigest(SwapIntent calldata intent) private view returns (bytes32) {
