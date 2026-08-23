@@ -880,6 +880,8 @@ async function deployEvm(
       preflight.rpc,
       "--verifier",
       "etherscan",
+      "--etherscan-api-key",
+      required(options.source, "ETHERSCAN_API_KEY"),
       "--constructor-args",
       constructorArgs,
       "--watch",

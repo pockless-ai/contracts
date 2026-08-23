@@ -221,6 +221,10 @@ test("command construction never uses raw keys and redacts signer paths", () => 
   assert.equal(redactedEvm[redactedEvm.indexOf("--rpc-url") + 1], "<redacted>")
   assert.equal(redactedEvm[redactedEvm.indexOf("--account") + 1], "<redacted>")
   assert.equal(redactedEvm[redactedEvm.indexOf("--from") + 1], "<redacted>")
+  assert.deepEqual(
+    redactArgs(["--etherscan-api-key", "secret-verifier-key"]),
+    ["--etherscan-api-key", "<redacted>"]
+  )
   const solana = solanaDeployArgs({
     artifact: "program.so",
     rpc: "https://rpc.example",
