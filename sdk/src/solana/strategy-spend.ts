@@ -18,7 +18,21 @@ const VARIANT = {
   ExecuteSwapWithFees: 6,
   WithdrawAsset: 7,
   CloseStrategy: 8,
+  ExecuteSwapWithFeesV2: 9,
 } as const
+
+export type SolanaGasMode =
+  | "none"
+  | "credit_only"
+  | "separate"
+  | "native_output"
+
+const GAS_MODE: Record<SolanaGasMode, number> = {
+  none: 0,
+  credit_only: 1,
+  separate: 2,
+  native_output: 3,
+}
 
 export function solanaStrategyIdFromCuid(strategyCuid: string): Uint8Array {
   const hash = keccak256(toBytes(strategyCuid))
@@ -160,7 +174,18 @@ export function encodeExecuteSwapWithFees(input: {
     : Buffer.alloc(0)
 
   const data = Buffer.alloc(
-    1 + 1 + 8 + 8 + 8 + 8 + 8 + 32 + 4 + input.jupiterData.length + 4 + gasPayload.length
+    1 +
+      1 +
+      8 +
+      8 +
+      8 +
+      8 +
+      8 +
+      32 +
+      4 +
+      input.jupiterData.length +
+      4 +
+      gasPayload.length
   )
   let offset = 0
   data[offset++] = VARIANT.ExecuteSwapWithFees
@@ -176,6 +201,101 @@ export function encodeExecuteSwapWithFees(input: {
   data.writeBigUInt64LE(input.minNativeOut, offset)
   offset += 8
   data.set(input.treasury.toBytes(), offset)
+  offset += 32
+  data.writeUInt32LE(input.jupiterData.length, offset)
+  offset += 4
+  input.jupiterData.copy(data, offset)
+  offset += input.jupiterData.length
+  data.writeUInt32LE(gasPayload.length, offset)
+  offset += 4
+  gasPayload.copy(data, offset)
+  return data
+}
+
+export function encodeExecuteSwapWithFeesV2(input: {
+  isBuy: boolean
+  usdcAmount: bigint
+  tokenAmount: bigint
+  platformFeeUsdc: bigint
+  gasMode: SolanaGasMode
+  gasTopUpUsdc: bigint
+  nativeAmount: bigint
+  treasury: PublicKey
+  gasRecipient: PublicKey
+  jupiterData: Buffer
+  gasJupiterData: Buffer
+  gasJupiterAccountCount: number
+}) {
+  const hasGasRoute =
+    input.gasJupiterData.length > 0 || input.gasJupiterAccountCount > 0
+  const validAccountCount =
+    input.gasJupiterAccountCount > 0 && input.gasJupiterAccountCount <= 255
+  const valid =
+    input.jupiterData.length > 0 &&
+    input.usdcAmount > 0n &&
+    input.tokenAmount > 0n &&
+    ((input.gasMode === "none" &&
+      input.gasTopUpUsdc === 0n &&
+      input.nativeAmount === 0n &&
+      !hasGasRoute) ||
+      (input.gasMode === "credit_only" &&
+        input.gasTopUpUsdc === 0n &&
+        input.nativeAmount === 0n &&
+        !hasGasRoute) ||
+      (input.gasMode === "separate" &&
+        input.gasTopUpUsdc > 0n &&
+        input.nativeAmount > 0n &&
+        input.gasJupiterData.length > 0 &&
+        validAccountCount) ||
+      (input.gasMode === "native_output" &&
+        input.isBuy &&
+        input.gasTopUpUsdc > 0n &&
+        input.nativeAmount > 0n &&
+        !hasGasRoute))
+  if (!valid) {
+    throw new Error("Invalid V2 gas encoding.")
+  }
+
+  const gasPayload =
+    input.gasMode === "separate"
+      ? Buffer.concat([
+          Buffer.from([input.gasJupiterAccountCount]),
+          input.gasJupiterData,
+        ])
+      : Buffer.alloc(0)
+  const data = Buffer.alloc(
+    1 +
+      1 +
+      8 +
+      8 +
+      8 +
+      1 +
+      8 +
+      8 +
+      32 +
+      32 +
+      4 +
+      input.jupiterData.length +
+      4 +
+      gasPayload.length
+  )
+  let offset = 0
+  data[offset++] = VARIANT.ExecuteSwapWithFeesV2
+  data[offset++] = input.isBuy ? 1 : 0
+  data.writeBigUInt64LE(input.usdcAmount, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.tokenAmount, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.platformFeeUsdc, offset)
+  offset += 8
+  data[offset++] = GAS_MODE[input.gasMode]
+  data.writeBigUInt64LE(input.gasTopUpUsdc, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.nativeAmount, offset)
+  offset += 8
+  data.set(input.treasury.toBytes(), offset)
+  offset += 32
+  data.set(input.gasRecipient.toBytes(), offset)
   offset += 32
   data.writeUInt32LE(input.jupiterData.length, offset)
   offset += 4

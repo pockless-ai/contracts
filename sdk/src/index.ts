@@ -11,6 +11,10 @@ export {
   sessionSpend7702Abi,
   SESSION_SPEND_NAME,
   SESSION_SPEND_VERSION,
+  SESSION_SPEND_V2_VERSION,
+  EVM_NATIVE_TOKEN,
+  ZEROX_NATIVE_TOKEN,
+  GasFundingMode,
   swapIntentTypes,
   swapIntentDomain,
   encodeSessionGrant,
@@ -20,10 +24,13 @@ export {
   encodeSessionSetLimit,
   encodeExecuteSwap,
   encodeExecuteSwapWithFees,
+  encodeExecuteSwapWithFeesV2,
   strategyIdFromCuid,
   revokeIntentTypes,
   swapBundleIntentTypes,
   swapBundleIntentDomain,
+  swapBundleIntentV2Types,
+  swapBundleIntentV2Domain,
 } from "./evm/session-spend-7702"
 
 export {
@@ -44,13 +51,17 @@ export {
   encodeRevoke,
   encodeExecuteSwap as encodeSolanaExecuteSwap,
   encodeExecuteSwapWithFees as encodeSolanaExecuteSwapWithFees,
+  encodeExecuteSwapWithFeesV2 as encodeSolanaExecuteSwapWithFeesV2,
   encodeWithdrawAsset,
   encodeCloseStrategy,
   solanaStrategyIdFromCuid,
 } from "./solana/strategy-spend"
 
+export type { SolanaGasMode } from "./solana/strategy-spend"
+
 export type {
   RevokeIntentMessage,
   SwapIntentMessage,
   SwapBundleIntentMessage,
+  SwapBundleIntentV2Message,
 } from "./evm/session-spend-7702"

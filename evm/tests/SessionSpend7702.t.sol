@@ -57,8 +57,11 @@ contract MockUsdt is MockERC20 {
 
 /// @dev Simulates 0x AllowanceHolder.exec at the pinned mainnet address.
 contract MockAllowanceHolder {
+    address internal constant NATIVE_SENTINEL = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+
     mapping(address => mapping(address => uint256)) public rateNumerator;
     mapping(address => mapping(address => uint256)) public observedAllowance;
+    uint256 public observedCallValue;
     bool public pullExtra;
     bool public revertAfterPull;
 
@@ -73,13 +76,22 @@ contract MockAllowanceHolder {
 
     function exec(address, address token, uint256 amount, address, bytes calldata data)
         external
+        payable
         returns (bytes memory)
     {
         (, address buyToken) = abi.decode(data, (bytes4, address));
-        uint256 numerator = rateNumerator[token][buyToken];
+        address rateToken = token == NATIVE_SENTINEL ? address(0) : token;
+        uint256 numerator = rateNumerator[rateToken][buyToken];
         require(numerator > 0, "rate");
-        observedAllowance[token][msg.sender] = MockERC20(token).allowance(msg.sender, address(this));
-        MockERC20(token).transferFrom(msg.sender, address(this), amount + (pullExtra ? 1 : 0));
+        observedCallValue = msg.value;
+        if (token == NATIVE_SENTINEL) {
+            require(msg.value == amount, "native value");
+        } else {
+            require(msg.value == 0, "unexpected value");
+            observedAllowance[token][msg.sender] =
+                MockERC20(token).allowance(msg.sender, address(this));
+            MockERC20(token).transferFrom(msg.sender, address(this), amount + (pullExtra ? 1 : 0));
+        }
         if (revertAfterPull) revert("router failed");
         if (buyToken == address(0)) {
             uint256 nativeOut = (amount * numerator) / 1e18;
@@ -97,6 +109,7 @@ contract MockAllowanceHolder {
 
 contract SessionSpend7702Test is Test {
     address internal constant ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
+    address internal constant NATIVE_SENTINEL = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     SessionSpend7702 internal wallet;
     MockERC20 internal usdc;
@@ -129,6 +142,7 @@ contract SessionSpend7702Test is Test {
         _setRate(address(usdc), address(weth), 1e27);
         _setRate(address(weth), address(usdc), 1e9);
         _setRate(address(usdc), address(0), NATIVE_RATE);
+        _setRate(address(0), address(usdc), 1e9);
 
         SessionSpend7702 implementation = new SessionSpend7702(address(usdc));
         address delegatedEoa = vm.addr(0x7702);
@@ -815,7 +829,293 @@ contract SessionSpend7702Test is Test {
         assertEq(session.capacityUsdc, LIMIT_USDC - PLATFORM_FEE - GAS_SELL);
     }
 
+    // ── native strategy inventory ───────────────────────────────────────────
+
+    function testNativeBuyRecordsZeroAddressInventory() public {
+        _buyNative(100_000_000, 0.09 ether);
+
+        SessionSpend7702.AssetRecord memory asset = wallet.assetOf(STRATEGY_A, address(0));
+        assertEq(asset.quantity, 0.1 ether);
+        assertEq(asset.costUsdc, 100_000_000);
+        assertEq(wallet.sessionOf(STRATEGY_A, sessionKey).deployedUsdc, 100_000_000);
+    }
+
+    function testNativeSellUsesCallValueWithoutApproval() public {
+        _buyNative(100_000_000, 0.09 ether);
+        _sellNative(0.1 ether, 90_000_000);
+
+        SessionSpend7702.AssetRecord memory asset = wallet.assetOf(STRATEGY_A, address(0));
+        assertEq(asset.quantity, 0);
+        assertEq(asset.costUsdc, 0);
+        assertEq(_observedCallValue(), 0.1 ether);
+        assertEq(wallet.sessionOf(STRATEGY_A, sessionKey).deployedUsdc, 0);
+    }
+
+    function testNativeSellRejectsUnrecordedWalletBalance() public {
+        _buyNative(100_000_000, 0.09 ether);
+        vm.deal(address(wallet), address(wallet).balance + 1 ether);
+
+        SessionSpend7702.SwapIntent memory intent = SessionSpend7702.SwapIntent({
+            strategyId: STRATEGY_A,
+            sessionKey: sessionKey,
+            nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+            deadline: EXPIRES_AT,
+            sellToken: address(0),
+            buyToken: address(usdc),
+            maxSellAmount: 0.2 ether,
+            minBuyAmount: 1,
+            routerCalldataHash: bytes32(0)
+        });
+        bytes memory routerCalldata = _execCalldata(address(0), 0.2 ether, address(usdc));
+        intent.routerCalldataHash = keccak256(routerCalldata);
+
+        vm.expectRevert(SessionSpend7702.InsufficientInventory.selector);
+        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
+    }
+
+    // ── executeSwapWithFeesV2 ───────────────────────────────────────────────
+
+    function testV2CreditOnlyExecutesWithoutTopUp() public {
+        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
+            address(weth),
+            100_000_000,
+            0.09 ether,
+            SessionSpend7702.GasFundingMode.CREDIT_ONLY,
+            0,
+            0
+        );
+        _swapBundleV2(intent, address(this));
+
+        assertEq(wallet.assetOf(STRATEGY_A, address(weth)).quantity, 0.1 ether);
+        assertEq(wallet.sessionOf(STRATEGY_A, sessionKey).deployedUsdc, 100_000_000);
+    }
+
+    function testV2SeparateTopUpTransfersAndEmitsAfterSuccess() public {
+        uint256 nativeOut = (GAS_SELL * NATIVE_RATE) / 1e18;
+        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
+            address(weth),
+            100_000_000,
+            0.09 ether,
+            SessionSpend7702.GasFundingMode.SEPARATE_TOPUP,
+            GAS_SELL,
+            nativeOut
+        );
+
+        vm.expectEmit(true, true, true, true);
+        emit SessionSpend7702.GasCreditFunded(
+            STRATEGY_A,
+            sessionKey,
+            gasRecipient,
+            SessionSpend7702.GasFundingMode.SEPARATE_TOPUP,
+            GAS_SELL,
+            nativeOut
+        );
+        _swapBundleV2(intent, gasRecipient);
+
+        assertEq(gasRecipient.balance, nativeOut);
+        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, 100_000_000);
+        assertEq(session.capacityUsdc, LIMIT_USDC - GAS_SELL);
+    }
+
+    function testV2NativeOutputSplitsGasFromStrategyInventory() public {
+        uint256 strategySell = 100_000_000;
+        uint256 gasNative = (GAS_SELL * NATIVE_RATE) / 1e18;
+        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
+            address(0),
+            strategySell,
+            0.09 ether,
+            SessionSpend7702.GasFundingMode.NATIVE_OUTPUT,
+            GAS_SELL,
+            gasNative
+        );
+        _swapBundleV2(intent, gasRecipient);
+
+        SessionSpend7702.AssetRecord memory nativeAsset = wallet.assetOf(STRATEGY_A, address(0));
+        assertEq(nativeAsset.quantity, 0.1 ether);
+        assertEq(nativeAsset.costUsdc, strategySell);
+        assertEq(gasRecipient.balance, gasNative);
+        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, strategySell);
+        assertEq(session.capacityUsdc, LIMIT_USDC - GAS_SELL);
+    }
+
+    function testV2RejectsGasRecipientDifferentFromBroadcaster() public {
+        uint256 nativeOut = (GAS_SELL * NATIVE_RATE) / 1e18;
+        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
+            address(weth),
+            100_000_000,
+            1,
+            SessionSpend7702.GasFundingMode.SEPARATE_TOPUP,
+            GAS_SELL,
+            nativeOut
+        );
+        (bytes memory strategyCalldata, bytes memory gasCalldata) = _v2Calldata(intent);
+        intent.strategyRouterCalldataHash = keccak256(strategyCalldata);
+        intent.gasRouterCalldataHash = keccak256(gasCalldata);
+
+        vm.prank(address(0xBAD));
+        vm.expectRevert(SessionSpend7702.InvalidIntent.selector);
+        wallet.executeSwapWithFeesV2(
+            intent, strategyCalldata, gasCalldata, _signBundleIntentV2(intent)
+        );
+    }
+
+    function testV2SeparateTopUpEnforcesSignedNativeBound() public {
+        uint256 nativeOut = (GAS_SELL * NATIVE_RATE) / 1e18;
+        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
+            address(weth),
+            100_000_000,
+            1,
+            SessionSpend7702.GasFundingMode.SEPARATE_TOPUP,
+            GAS_SELL,
+            nativeOut + 1
+        );
+
+        vm.expectRevert(SessionSpend7702.SlippageExceeded.selector);
+        _swapBundleV2(intent, gasRecipient);
+    }
+
+    function testV2NativeOutputEnforcesCombinedOutputBound() public {
+        uint256 gasNative = (GAS_SELL * NATIVE_RATE) / 1e18;
+        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
+            address(0),
+            100_000_000,
+            0.1 ether + 1,
+            SessionSpend7702.GasFundingMode.NATIVE_OUTPUT,
+            GAS_SELL,
+            gasNative
+        );
+
+        vm.expectRevert(SessionSpend7702.SlippageExceeded.selector);
+        _swapBundleV2(intent, gasRecipient);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    function _buyNative(uint256 spend, uint256 minBuy) internal {
+        SessionSpend7702.SwapIntent memory intent = SessionSpend7702.SwapIntent({
+            strategyId: STRATEGY_A,
+            sessionKey: sessionKey,
+            nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+            deadline: EXPIRES_AT,
+            sellToken: address(usdc),
+            buyToken: address(0),
+            maxSellAmount: spend,
+            minBuyAmount: minBuy,
+            routerCalldataHash: bytes32(0)
+        });
+        _swap(sessionKeyPrivateKey, intent);
+    }
+
+    function _sellNative(uint256 sellAmount, uint256 minBuyUsdc) internal {
+        SessionSpend7702.SwapIntent memory intent = SessionSpend7702.SwapIntent({
+            strategyId: STRATEGY_A,
+            sessionKey: sessionKey,
+            nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+            deadline: EXPIRES_AT,
+            sellToken: address(0),
+            buyToken: address(usdc),
+            maxSellAmount: sellAmount,
+            minBuyAmount: minBuyUsdc,
+            routerCalldataHash: bytes32(0)
+        });
+        _swap(sessionKeyPrivateKey, intent);
+    }
+
+    function _buyBundleIntentV2(
+        address buyToken,
+        uint256 strategySell,
+        uint256 minStrategyBuy,
+        SessionSpend7702.GasFundingMode mode,
+        uint256 gasUsdc,
+        uint256 gasNative
+    ) internal view returns (SessionSpend7702.SwapBundleIntentV2 memory) {
+        bool hasTopUp = mode != SessionSpend7702.GasFundingMode.CREDIT_ONLY;
+        return SessionSpend7702.SwapBundleIntentV2({
+            strategyId: STRATEGY_A,
+            sessionKey: sessionKey,
+            nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+            deadline: EXPIRES_AT,
+            sellToken: address(usdc),
+            buyToken: buyToken,
+            strategySellAmount: strategySell,
+            minStrategyBuyAmount: minStrategyBuy,
+            strategyRouterCalldataHash: bytes32(0),
+            platformFeeUsdc: 0,
+            feeRecipient: address(0),
+            gasFundingMode: mode,
+            gasTopUpUsdc: gasUsdc,
+            gasTopUpNative: gasNative,
+            gasRecipient: hasTopUp ? gasRecipient : address(0),
+            gasRouterCalldataHash: bytes32(0)
+        });
+    }
+
+    function _swapBundleV2(SessionSpend7702.SwapBundleIntentV2 memory intent, address broadcaster)
+        internal
+    {
+        (bytes memory strategyCalldata, bytes memory gasCalldata) = _v2Calldata(intent);
+        intent.strategyRouterCalldataHash = keccak256(strategyCalldata);
+        intent.gasRouterCalldataHash = gasCalldata.length == 0 ? bytes32(0) : keccak256(gasCalldata);
+        vm.prank(broadcaster);
+        wallet.executeSwapWithFeesV2(
+            intent, strategyCalldata, gasCalldata, _signBundleIntentV2(intent)
+        );
+    }
+
+    function _v2Calldata(SessionSpend7702.SwapBundleIntentV2 memory intent)
+        internal
+        view
+        returns (bytes memory strategyCalldata, bytes memory gasCalldata)
+    {
+        uint256 strategyRouterSell = intent.gasFundingMode
+            == SessionSpend7702.GasFundingMode.NATIVE_OUTPUT
+            ? intent.strategySellAmount + intent.gasTopUpUsdc
+            : intent.strategySellAmount;
+        strategyCalldata = _execCalldata(intent.sellToken, strategyRouterSell, intent.buyToken);
+        gasCalldata = intent.gasFundingMode == SessionSpend7702.GasFundingMode.SEPARATE_TOPUP
+            ? _execCalldata(address(usdc), intent.gasTopUpUsdc, address(0))
+            : bytes("");
+    }
+
+    function _signBundleIntentV2(SessionSpend7702.SwapBundleIntentV2 memory intent)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 typehash = keccak256(
+            "SwapBundleIntentV2(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 strategySellAmount,uint256 minStrategyBuyAmount,bytes32 strategyRouterCalldataHash,uint256 platformFeeUsdc,address feeRecipient,uint8 gasFundingMode,uint256 gasTopUpUsdc,uint256 gasTopUpNative,address gasRecipient,bytes32 gasRouterCalldataHash)"
+        );
+        bytes memory firstHalf = abi.encode(
+            typehash,
+            intent.strategyId,
+            intent.sessionKey,
+            intent.nonce,
+            intent.deadline,
+            intent.sellToken,
+            intent.buyToken,
+            intent.strategySellAmount,
+            intent.minStrategyBuyAmount
+        );
+        bytes memory secondHalf = abi.encode(
+            intent.strategyRouterCalldataHash,
+            intent.platformFeeUsdc,
+            intent.feeRecipient,
+            uint8(intent.gasFundingMode),
+            intent.gasTopUpUsdc,
+            intent.gasTopUpNative,
+            intent.gasRecipient,
+            intent.gasRouterCalldataHash
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01", _domainSeparator("2"), keccak256(bytes.concat(firstHalf, secondHalf))
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(sessionKeyPrivateKey, digest);
+        return abi.encodePacked(r, s, v);
+    }
 
     function _buyWithFees(
         uint256 spend,
@@ -998,6 +1298,13 @@ contract SessionSpend7702Test is Test {
         return abi.decode(result, (uint256));
     }
 
+    function _observedCallValue() internal view returns (uint256) {
+        (bool ok, bytes memory result) =
+            ALLOWANCE_HOLDER.staticcall(abi.encodeWithSelector(holder.observedCallValue.selector));
+        require(ok, "observedCallValue");
+        return abi.decode(result, (uint256));
+    }
+
     function _buy(uint256 spend, uint256 minBuy) internal {
         _swap(
             sessionKeyPrivateKey,
@@ -1053,7 +1360,7 @@ contract SessionSpend7702Test is Test {
         return abi.encodeWithSelector(
             0x2213bc0b,
             address(0x1111),
-            sellToken,
+            sellToken == address(0) ? NATIVE_SENTINEL : sellToken,
             amount,
             address(0x1111),
             abi.encode(bytes4(0x12345678), buyToken)
@@ -1131,13 +1438,17 @@ contract SessionSpend7702Test is Test {
     }
 
     function _domainSeparator() internal view returns (bytes32) {
+        return _domainSeparator("1");
+    }
+
+    function _domainSeparator(string memory version) internal view returns (bytes32) {
         return keccak256(
             abi.encode(
                 keccak256(
                     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
                 ),
                 keccak256(bytes("PocklessSessionSpend7702")),
-                keccak256(bytes("1")),
+                keccak256(bytes(version)),
                 block.chainid,
                 address(wallet)
             )

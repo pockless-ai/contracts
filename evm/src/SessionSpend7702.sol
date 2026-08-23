@@ -27,6 +27,25 @@ struct SwapBundleIntentPayload {
     bytes32 gasRouterCalldataHash;
 }
 
+struct SwapBundleIntentV2Payload {
+    bytes32 strategyId;
+    address sessionKey;
+    uint256 nonce;
+    uint256 deadline;
+    address sellToken;
+    address buyToken;
+    uint256 strategySellAmount;
+    uint256 minStrategyBuyAmount;
+    bytes32 strategyRouterCalldataHash;
+    uint256 platformFeeUsdc;
+    address feeRecipient;
+    uint8 gasFundingMode;
+    uint256 gasTopUpUsdc;
+    uint256 gasTopUpNative;
+    address gasRecipient;
+    bytes32 gasRouterCalldataHash;
+}
+
 library SwapBundleIntentHash {
     bytes32 internal constant CORE_TYPEHASH = keccak256(
         "SwapBundleCore(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 maxSellAmount,uint256 minBuyAmount,bytes32 routerCalldataHash)"
@@ -78,6 +97,45 @@ library SwapBundleIntentHash {
     }
 }
 
+library SwapBundleIntentV2Hash {
+    bytes32 internal constant TYPEHASH = keccak256(
+        "SwapBundleIntentV2(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 strategySellAmount,uint256 minStrategyBuyAmount,bytes32 strategyRouterCalldataHash,uint256 platformFeeUsdc,address feeRecipient,uint8 gasFundingMode,uint256 gasTopUpUsdc,uint256 gasTopUpNative,address gasRecipient,bytes32 gasRouterCalldataHash)"
+    );
+
+    function digest(SwapBundleIntentV2Payload memory intent, bytes32 domainSeparator)
+        internal
+        pure
+        returns (bytes32)
+    {
+        bytes memory firstHalf = abi.encode(
+            TYPEHASH,
+            intent.strategyId,
+            intent.sessionKey,
+            intent.nonce,
+            intent.deadline,
+            intent.sellToken,
+            intent.buyToken,
+            intent.strategySellAmount,
+            intent.minStrategyBuyAmount
+        );
+        bytes memory secondHalf = abi.encode(
+            intent.strategyRouterCalldataHash,
+            intent.platformFeeUsdc,
+            intent.feeRecipient,
+            intent.gasFundingMode,
+            intent.gasTopUpUsdc,
+            intent.gasTopUpNative,
+            intent.gasRecipient,
+            intent.gasRouterCalldataHash
+        );
+        return keccak256(
+            abi.encodePacked(
+                "\x19\x01", domainSeparator, keccak256(bytes.concat(firstHalf, secondHalf))
+            )
+        );
+    }
+}
+
 /// @title SessionSpend7702
 /// @notice ERC-7702 implementation for per-strategy session keys that may swap
 ///         through a pinned 0x AllowanceHolder. Storage is ERC-7201 namespaced.
@@ -87,6 +145,7 @@ contract SessionSpend7702 {
         0x3e0c859c46df804f27f96dac030007e24ba5d79c9f807df46118f59ed197e100;
 
     address public constant ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
+    address public constant ZEROX_NATIVE_TOKEN = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     bytes4 private constant EXEC_SELECTOR = 0x2213bc0b;
 
@@ -141,6 +200,31 @@ contract SessionSpend7702 {
         address feeRecipient;
         uint256 gasSellUsdc;
         uint256 minNativeOut;
+        address gasRecipient;
+        bytes32 gasRouterCalldataHash;
+    }
+
+    enum GasFundingMode {
+        CREDIT_ONLY,
+        SEPARATE_TOPUP,
+        NATIVE_OUTPUT
+    }
+
+    struct SwapBundleIntentV2 {
+        bytes32 strategyId;
+        address sessionKey;
+        uint256 nonce;
+        uint256 deadline;
+        address sellToken;
+        address buyToken;
+        uint256 strategySellAmount;
+        uint256 minStrategyBuyAmount;
+        bytes32 strategyRouterCalldataHash;
+        uint256 platformFeeUsdc;
+        address feeRecipient;
+        GasFundingMode gasFundingMode;
+        uint256 gasTopUpUsdc;
+        uint256 gasTopUpNative;
         address gasRecipient;
         bytes32 gasRouterCalldataHash;
     }
@@ -220,6 +304,14 @@ contract SessionSpend7702 {
         uint256 gasSellUsdc,
         uint256 nativeOut
     );
+    event GasCreditFunded(
+        bytes32 indexed strategyId,
+        address indexed sessionKey,
+        address indexed gasRecipient,
+        GasFundingMode fundingMode,
+        uint256 gasTopUpUsdc,
+        uint256 nativeAmount
+    );
 
     modifier onlyOwner() {
         if (msg.sender != address(this)) revert NotOwner();
@@ -286,6 +378,7 @@ contract SessionSpend7702 {
             _swapIntentDigest(intent),
             sessionSignature
         );
+        _assertStrategyInventory(intent.strategyId, intent.sellToken, intent.maxSellAmount);
 
         (uint256 sellAmount, uint256 buyAmount) =
             _executeRouterSwap(intent.sellToken, intent.buyToken, intent.maxSellAmount, routerData);
@@ -335,6 +428,129 @@ contract SessionSpend7702 {
         revert InvalidIntent();
     }
 
+    function executeSwapWithFeesV2(
+        SwapBundleIntentV2 calldata intent,
+        bytes calldata strategyRouterCalldata,
+        bytes calldata gasRouterCalldata,
+        bytes calldata sessionSignature
+    ) external nonReentrant {
+        bytes memory strategyCalldata = strategyRouterCalldata;
+        bytes memory gasCalldata = gasRouterCalldata;
+        _validateV2Funding(intent, gasCalldata);
+
+        uint256 routerSellAmount = intent.gasFundingMode == GasFundingMode.NATIVE_OUTPUT
+            ? intent.strategySellAmount + intent.gasTopUpUsdc
+            : intent.strategySellAmount;
+        _validateRouterCalldata(
+            strategyCalldata, intent.strategyRouterCalldataHash, intent.sellToken, routerSellAmount
+        );
+        _validateSignedSwap(
+            intent.strategyId,
+            intent.sessionKey,
+            intent.nonce,
+            intent.deadline,
+            SwapBundleIntentV2Hash.digest(_bundleV2Payload(intent), _domainSeparatorV2()),
+            sessionSignature
+        );
+
+        if (intent.gasFundingMode == GasFundingMode.NATIVE_OUTPUT) {
+            _executeNativeOutputBundle(_layout(), intent, strategyCalldata);
+            return;
+        }
+        _executeV2Bundle(_layout(), intent, strategyCalldata, gasCalldata);
+    }
+
+    function _executeV2Bundle(
+        Layout storage $,
+        SwapBundleIntentV2 calldata intent,
+        bytes memory strategyRouterCalldata,
+        bytes memory gasRouterCalldata
+    ) private {
+        Session storage session = $.sessions[intent.strategyId][intent.sessionKey];
+        bool isBuy = intent.sellToken == usdcToken && intent.buyToken != usdcToken;
+        bool isSell = intent.buyToken == usdcToken && intent.sellToken != usdcToken;
+        if (!isBuy && !isSell) revert InvalidIntent();
+
+        uint256 overheadUsdc =
+            _normalizeUsdc(intent.platformFeeUsdc) + _normalizeUsdc(intent.gasTopUpUsdc);
+        if (isBuy) {
+            uint256 deployable = uint256(session.capacityUsdc) - uint256(session.deployedUsdc);
+            if (_normalizeUsdc(intent.strategySellAmount) + overheadUsdc > deployable) {
+                revert SpendLimitExceeded();
+            }
+        }
+
+        (uint256 sellAmount, uint256 buyAmount) = _executeRouterSwap(
+            intent.sellToken,
+            intent.buyToken,
+            intent.strategySellAmount,
+            strategyRouterCalldata,
+            $.assets[intent.strategyId][intent.sellToken].quantity
+        );
+        if (buyAmount < intent.minStrategyBuyAmount) revert SlippageExceeded();
+
+        int256 realizedPnlUsdc = _applySwapAccounting(
+            $, intent.strategyId, session, intent.sellToken, intent.buyToken, sellAmount, buyAmount
+        );
+        _deductOverhead(session, overheadUsdc);
+        _chargePlatformFeeV2(intent);
+        _fundSeparateGas(intent, gasRouterCalldata);
+
+        session.nonce += 1;
+        emit SwapExecuted(
+            intent.strategyId,
+            intent.sessionKey,
+            intent.sellToken,
+            intent.buyToken,
+            sellAmount,
+            buyAmount,
+            realizedPnlUsdc
+        );
+    }
+
+    function _executeNativeOutputBundle(
+        Layout storage $,
+        SwapBundleIntentV2 calldata intent,
+        bytes memory strategyRouterCalldata
+    ) private {
+        if (intent.sellToken != usdcToken || intent.buyToken != address(0)) {
+            revert InvalidIntent();
+        }
+        Session storage session = $.sessions[intent.strategyId][intent.sessionKey];
+        uint256 overheadUsdc =
+            _normalizeUsdc(intent.platformFeeUsdc) + _normalizeUsdc(intent.gasTopUpUsdc);
+        uint256 strategyCostUsdc = _normalizeUsdc(intent.strategySellAmount);
+        uint256 deployable = uint256(session.capacityUsdc) - uint256(session.deployedUsdc);
+        if (strategyCostUsdc + overheadUsdc > deployable) revert SpendLimitExceeded();
+
+        _deductOverhead(session, overheadUsdc);
+        _chargePlatformFeeV2(intent);
+
+        uint256 totalRouterInput = intent.strategySellAmount + intent.gasTopUpUsdc;
+        (uint256 totalSold, uint256 grossNativeOut) =
+            _executeRouterSwap(usdcToken, address(0), totalRouterInput, strategyRouterCalldata, 0);
+        if (totalSold != totalRouterInput) revert InvalidIntent();
+        if (grossNativeOut < intent.minStrategyBuyAmount + intent.gasTopUpNative) {
+            revert SlippageExceeded();
+        }
+
+        uint256 netStrategyNative = grossNativeOut - intent.gasTopUpNative;
+        AssetRecord storage nativeAsset = $.assets[intent.strategyId][address(0)];
+        _executeBuy(session, nativeAsset, netStrategyNative, strategyCostUsdc);
+        _transferGasCredit(intent, intent.gasTopUpNative);
+
+        session.nonce += 1;
+        emit SwapExecuted(
+            intent.strategyId,
+            intent.sessionKey,
+            usdcToken,
+            address(0),
+            intent.strategySellAmount,
+            netStrategyNative,
+            0
+        );
+    }
+
     function _executeBuyBundle(
         Layout storage $,
         SwapBundleIntent calldata intent,
@@ -377,6 +593,7 @@ contract SessionSpend7702 {
         bytes memory gasRouterCalldata
     ) private {
         Session storage session = $.sessions[intent.strategyId][intent.sessionKey];
+        _assertStrategyInventory(intent.strategyId, intent.sellToken, intent.maxSellAmount);
         (uint256 sellAmount, uint256 buyAmount) = _executeRouterSwap(
             intent.sellToken, intent.buyToken, intent.maxSellAmount, strategyRouterCalldata
         );
@@ -653,7 +870,7 @@ contract SessionSpend7702 {
             bytes memory targetCalldata
         ) = abi.decode(_routerArgs(routerCalldata), (address, address, uint256, address, bytes));
         if (
-            calldataSellToken != sellToken || calldataSellAmount != maxSellAmount
+            calldataSellToken != _routerToken(sellToken) || calldataSellAmount != maxSellAmount
                 || operator == address(0) || target == address(0) || operator != target
         ) revert RouterFieldsMismatch();
         if (targetCalldata.length < 4) revert RouterFieldsMismatch();
@@ -673,23 +890,67 @@ contract SessionSpend7702 {
         _validateRouterCalldata(gasRouterCalldata, gasRouterCalldataHash, usdcToken, gasSellUsdc);
     }
 
+    function _validateV2Funding(SwapBundleIntentV2 calldata intent, bytes memory gasRouterCalldata)
+        private
+        view
+    {
+        if (intent.gasFundingMode == GasFundingMode.CREDIT_ONLY) {
+            if (
+                intent.gasTopUpUsdc != 0 || intent.gasTopUpNative != 0
+                    || intent.gasRecipient != address(0)
+                    || intent.gasRouterCalldataHash != bytes32(0) || gasRouterCalldata.length != 0
+            ) revert InvalidIntent();
+            return;
+        }
+
+        if (
+            intent.gasTopUpUsdc == 0 || intent.gasTopUpNative == 0
+                || intent.gasRecipient != msg.sender
+        ) {
+            revert InvalidIntent();
+        }
+
+        if (intent.gasFundingMode == GasFundingMode.SEPARATE_TOPUP) {
+            _validateRouterCalldata(
+                gasRouterCalldata, intent.gasRouterCalldataHash, usdcToken, intent.gasTopUpUsdc
+            );
+            return;
+        }
+
+        if (
+            intent.sellToken != usdcToken || intent.buyToken != address(0)
+                || intent.gasRouterCalldataHash != bytes32(0) || gasRouterCalldata.length != 0
+        ) revert InvalidIntent();
+    }
+
     function _executeRouterSwap(
         address sellToken,
         address buyToken,
         uint256 maxSellAmount,
         bytes memory routerCalldata
     ) private returns (uint256 sellAmount, uint256 buyAmount) {
-        uint256 sellBefore = IERC20(sellToken).balanceOf(address(this));
+        uint256 sellBefore = sellToken == address(0)
+            ? address(this).balance
+            : IERC20(sellToken).balanceOf(address(this));
         uint256 buyBefore = buyToken == address(0)
             ? address(this).balance
             : IERC20(buyToken).balanceOf(address(this));
 
-        _forceApprove(sellToken, ALLOWANCE_HOLDER, maxSellAmount);
-        (bool ok, bytes memory result) = ALLOWANCE_HOLDER.call(routerCalldata);
+        bool isNativeSell = sellToken == address(0);
+        if (!isNativeSell) {
+            _forceApprove(sellToken, ALLOWANCE_HOLDER, maxSellAmount);
+        }
+        (bool ok, bytes memory result) = isNativeSell
+            ? ALLOWANCE_HOLDER.call{value: maxSellAmount}(routerCalldata)
+            : ALLOWANCE_HOLDER.call(routerCalldata);
         if (!ok) revert CallFailed(result);
-        _forceApprove(sellToken, ALLOWANCE_HOLDER, 0);
+        if (!isNativeSell) {
+            _forceApprove(sellToken, ALLOWANCE_HOLDER, 0);
+        }
 
-        uint256 sellAfter = IERC20(sellToken).balanceOf(address(this));
+        uint256 sellAfter = sellToken == address(0)
+            ? address(this).balance
+            : IERC20(sellToken).balanceOf(address(this));
         uint256 buyAfter = buyToken == address(0)
             ? address(this).balance
             : IERC20(buyToken).balanceOf(address(this));
@@ -698,6 +959,33 @@ contract SessionSpend7702 {
         buyAmount = buyAfter - buyBefore;
         if (sellAmount == 0 || buyAmount == 0) revert InvalidIntent();
         if (sellAmount > maxSellAmount) revert SlippageExceeded();
+    }
+
+    function _executeRouterSwap(
+        address sellToken,
+        address buyToken,
+        uint256 maxSellAmount,
+        bytes memory routerCalldata,
+        uint256 recordedInventory
+    ) private returns (uint256 sellAmount, uint256 buyAmount) {
+        if (sellToken != usdcToken && recordedInventory < maxSellAmount) {
+            revert InsufficientInventory();
+        }
+        return _executeRouterSwap(sellToken, buyToken, maxSellAmount, routerCalldata);
+    }
+
+    function _assertStrategyInventory(bytes32 strategyId, address sellToken, uint256 sellAmount)
+        private
+        view
+    {
+        if (sellToken != usdcToken && _layout().assets[strategyId][sellToken].quantity < sellAmount)
+        {
+            revert InsufficientInventory();
+        }
+    }
+
+    function _routerToken(address intentToken) private pure returns (address) {
+        return intentToken == address(0) ? ZEROX_NATIVE_TOKEN : intentToken;
     }
 
     function _routerArgs(bytes memory routerCalldata) private pure returns (bytes memory) {
@@ -719,6 +1007,50 @@ contract SessionSpend7702 {
         }
         emit PlatformFeeCharged(
             intent.strategyId, intent.sessionKey, intent.feeRecipient, intent.platformFeeUsdc
+        );
+    }
+
+    function _chargePlatformFeeV2(SwapBundleIntentV2 calldata intent) private {
+        if (intent.platformFeeUsdc == 0) {
+            if (intent.feeRecipient != address(0)) revert InvalidIntent();
+            return;
+        }
+        if (intent.feeRecipient == address(0)) revert InvalidIntent();
+        if (!IERC20(usdcToken).transfer(intent.feeRecipient, intent.platformFeeUsdc)) {
+            revert CallFailed("");
+        }
+        emit PlatformFeeCharged(
+            intent.strategyId, intent.sessionKey, intent.feeRecipient, intent.platformFeeUsdc
+        );
+    }
+
+    function _deductOverhead(Session storage session, uint256 overheadUsdc) private {
+        if (overheadUsdc == 0) return;
+        if (overheadUsdc > session.capacityUsdc) revert SpendLimitExceeded();
+        session.capacityUsdc = uint128(uint256(session.capacityUsdc) - overheadUsdc);
+    }
+
+    function _fundSeparateGas(SwapBundleIntentV2 calldata intent, bytes memory gasRouterCalldata)
+        private
+    {
+        if (intent.gasFundingMode != GasFundingMode.SEPARATE_TOPUP) return;
+        (, uint256 nativeOut) =
+            _executeRouterSwap(usdcToken, address(0), intent.gasTopUpUsdc, gasRouterCalldata);
+        if (nativeOut < intent.gasTopUpNative) revert SlippageExceeded();
+        _transferGasCredit(intent, nativeOut);
+    }
+
+    function _transferGasCredit(SwapBundleIntentV2 calldata intent, uint256 nativeAmount) private {
+        if (intent.gasRecipient != msg.sender) revert InvalidIntent();
+        (bool sent,) = msg.sender.call{value: nativeAmount}("");
+        if (!sent) revert CallFailed("");
+        emit GasCreditFunded(
+            intent.strategyId,
+            intent.sessionKey,
+            intent.gasRecipient,
+            intent.gasFundingMode,
+            intent.gasTopUpUsdc,
+            nativeAmount
         );
     }
 
@@ -808,6 +1140,31 @@ contract SessionSpend7702 {
         });
     }
 
+    function _bundleV2Payload(SwapBundleIntentV2 calldata intent)
+        private
+        pure
+        returns (SwapBundleIntentV2Payload memory payload)
+    {
+        payload = SwapBundleIntentV2Payload({
+            strategyId: intent.strategyId,
+            sessionKey: intent.sessionKey,
+            nonce: intent.nonce,
+            deadline: intent.deadline,
+            sellToken: intent.sellToken,
+            buyToken: intent.buyToken,
+            strategySellAmount: intent.strategySellAmount,
+            minStrategyBuyAmount: intent.minStrategyBuyAmount,
+            strategyRouterCalldataHash: intent.strategyRouterCalldataHash,
+            platformFeeUsdc: intent.platformFeeUsdc,
+            feeRecipient: intent.feeRecipient,
+            gasFundingMode: uint8(intent.gasFundingMode),
+            gasTopUpUsdc: intent.gasTopUpUsdc,
+            gasTopUpNative: intent.gasTopUpNative,
+            gasRecipient: intent.gasRecipient,
+            gasRouterCalldataHash: intent.gasRouterCalldataHash
+        });
+    }
+
     function _swapIntentDigest(SwapIntent calldata intent) private view returns (bytes32) {
         return keccak256(
             abi.encodePacked(
@@ -850,13 +1207,21 @@ contract SessionSpend7702 {
     }
 
     function _domainSeparator() private view returns (bytes32) {
+        return _domainSeparatorForVersion("1");
+    }
+
+    function _domainSeparatorV2() private view returns (bytes32) {
+        return _domainSeparatorForVersion("2");
+    }
+
+    function _domainSeparatorForVersion(string memory version) private view returns (bytes32) {
         return keccak256(
             abi.encode(
                 keccak256(
                     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
                 ),
                 keccak256(bytes("PocklessSessionSpend7702")),
-                keccak256(bytes("1")),
+                keccak256(bytes(version)),
                 block.chainid,
                 address(this)
             )

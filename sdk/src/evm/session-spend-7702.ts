@@ -9,6 +9,18 @@ import {
 
 export const SESSION_SPEND_NAME = "PocklessSessionSpend7702"
 export const SESSION_SPEND_VERSION = "1"
+export const SESSION_SPEND_V2_VERSION = "2"
+export const EVM_NATIVE_TOKEN = "0x0000000000000000000000000000000000000000"
+export const ZEROX_NATIVE_TOKEN = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+
+export const GasFundingMode = {
+  CREDIT_ONLY: 0,
+  SEPARATE_TOPUP: 1,
+  NATIVE_OUTPUT: 2,
+} as const
+
+export type GasFundingMode =
+  (typeof GasFundingMode)[keyof typeof GasFundingMode]
 
 export const sessionSpend7702Abi = [
   {
@@ -132,6 +144,52 @@ export const sessionSpend7702Abi = [
     ],
     outputs: [],
   },
+  {
+    type: "function",
+    name: "executeSwapWithFeesV2",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "intent",
+        type: "tuple",
+        components: [
+          { name: "strategyId", type: "bytes32" },
+          { name: "sessionKey", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" },
+          { name: "sellToken", type: "address" },
+          { name: "buyToken", type: "address" },
+          { name: "strategySellAmount", type: "uint256" },
+          { name: "minStrategyBuyAmount", type: "uint256" },
+          { name: "strategyRouterCalldataHash", type: "bytes32" },
+          { name: "platformFeeUsdc", type: "uint256" },
+          { name: "feeRecipient", type: "address" },
+          { name: "gasFundingMode", type: "uint8" },
+          { name: "gasTopUpUsdc", type: "uint256" },
+          { name: "gasTopUpNative", type: "uint256" },
+          { name: "gasRecipient", type: "address" },
+          { name: "gasRouterCalldataHash", type: "bytes32" },
+        ],
+      },
+      { name: "strategyRouterCalldata", type: "bytes" },
+      { name: "gasRouterCalldata", type: "bytes" },
+      { name: "sessionSignature", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "event",
+    name: "GasCreditFunded",
+    inputs: [
+      { name: "strategyId", type: "bytes32", indexed: true },
+      { name: "sessionKey", type: "address", indexed: true },
+      { name: "gasRecipient", type: "address", indexed: true },
+      { name: "fundingMode", type: "uint8", indexed: false },
+      { name: "gasTopUpUsdc", type: "uint256", indexed: false },
+      { name: "nativeAmount", type: "uint256", indexed: false },
+    ],
+    anonymous: false,
+  },
 ] as const
 
 export type SwapIntentMessage = {
@@ -166,6 +224,25 @@ export type SwapBundleIntentMessage = {
     gasRecipient: Address
     gasRouterCalldataHash: Hex
   }
+}
+
+export type SwapBundleIntentV2Message = {
+  strategyId: Hex
+  sessionKey: Address
+  nonce: bigint
+  deadline: bigint
+  sellToken: Address
+  buyToken: Address
+  strategySellAmount: bigint
+  minStrategyBuyAmount: bigint
+  strategyRouterCalldataHash: Hex
+  platformFeeUsdc: bigint
+  feeRecipient: Address
+  gasFundingMode: GasFundingMode
+  gasTopUpUsdc: bigint
+  gasTopUpNative: bigint
+  gasRecipient: Address
+  gasRouterCalldataHash: Hex
 }
 
 export type RevokeIntentMessage = {
@@ -219,11 +296,46 @@ export function swapBundleIntentTypes() {
   } as const
 }
 
+export function swapBundleIntentV2Types() {
+  return {
+    SwapBundleIntentV2: [
+      { name: "strategyId", type: "bytes32" },
+      { name: "sessionKey", type: "address" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "sellToken", type: "address" },
+      { name: "buyToken", type: "address" },
+      { name: "strategySellAmount", type: "uint256" },
+      { name: "minStrategyBuyAmount", type: "uint256" },
+      { name: "strategyRouterCalldataHash", type: "bytes32" },
+      { name: "platformFeeUsdc", type: "uint256" },
+      { name: "feeRecipient", type: "address" },
+      { name: "gasFundingMode", type: "uint8" },
+      { name: "gasTopUpUsdc", type: "uint256" },
+      { name: "gasTopUpNative", type: "uint256" },
+      { name: "gasRecipient", type: "address" },
+      { name: "gasRouterCalldataHash", type: "bytes32" },
+    ],
+  } as const
+}
+
 export function swapBundleIntentDomain(input: {
   chainId: number
   verifyingContract: Address
 }) {
   return swapIntentDomain(input)
+}
+
+export function swapBundleIntentV2Domain(input: {
+  chainId: number
+  verifyingContract: Address
+}) {
+  return {
+    name: SESSION_SPEND_NAME,
+    version: SESSION_SPEND_V2_VERSION,
+    chainId: input.chainId,
+    verifyingContract: input.verifyingContract,
+  }
 }
 
 export function revokeIntentTypes() {
@@ -376,6 +488,24 @@ export function encodeExecuteSwapWithFees(input: {
         gasRecipient: input.intent.fees.gasRecipient,
         gasRouterCalldataHash: input.intent.fees.gasRouterCalldataHash,
       },
+      input.strategyRouterCalldata,
+      input.gasRouterCalldata,
+      input.sessionSignature,
+    ],
+  })
+}
+
+export function encodeExecuteSwapWithFeesV2(input: {
+  intent: SwapBundleIntentV2Message
+  strategyRouterCalldata: Hex
+  gasRouterCalldata: Hex
+  sessionSignature: Hex
+}) {
+  return encodeFunctionData({
+    abi: sessionSpend7702Abi,
+    functionName: "executeSwapWithFeesV2",
+    args: [
+      input.intent,
       input.strategyRouterCalldata,
       input.gasRouterCalldata,
       input.sessionSignature,

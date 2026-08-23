@@ -20,7 +20,7 @@ use spl_token::{
     instruction as token_instruction,
     state::{Account as TokenAccount, AccountState, Mint},
 };
-use strategy_spend::instruction::StrategySpendInstruction;
+use strategy_spend::instruction::{GasMode, StrategySpendInstruction};
 use strategy_spend::state::{
     StrategyAccount, StrategyAsset, WalletConfig, ASSET_SEED, AUTHORITY_SEED, STRATEGY_SEED,
     VAULT_SEED, WALLET_SEED,
@@ -122,7 +122,7 @@ fn mock_jupiter(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> 
     {
         mock_gas_swap(_program_id, accounts, data)
     } else {
-        mock_token_swap(accounts, data)
+        mock_token_swap(_program_id, accounts, data)
     }
 }
 
@@ -171,7 +171,7 @@ fn mock_gas_swap(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> 
     )
 }
 
-fn mock_token_swap(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+fn mock_token_swap(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let accounts = &mut accounts.iter();
     let authority = next_account_info(accounts)?;
     let source = next_account_info(accounts)?;
@@ -199,23 +199,42 @@ fn mock_token_swap(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
             token_program.clone(),
         ],
     )?;
-    invoke(
-        &token_instruction::mint_to_checked(
-            token_program.key,
-            output_mint.key,
-            destination.key,
-            authority.key,
-            &[],
-            output_amount,
-            6,
-        )?,
-        &[
-            output_mint.clone(),
-            destination.clone(),
-            authority.clone(),
-            token_program.clone(),
-        ],
-    )
+    if output_mint.key == &spl_token::native_mint::id() {
+        let gas_funder = next_account_info(accounts)?;
+        let system_program_account = next_account_info(accounts)?;
+        let (_, gas_funder_bump) = Pubkey::find_program_address(&[GAS_FUNDER_SEED], program_id);
+        invoke_signed(
+            &system_instruction::transfer(gas_funder.key, destination.key, output_amount),
+            &[
+                gas_funder.clone(),
+                destination.clone(),
+                system_program_account.clone(),
+            ],
+            &[&[GAS_FUNDER_SEED, &[gas_funder_bump]]],
+        )?;
+        invoke(
+            &token_instruction::sync_native(token_program.key, destination.key)?,
+            &[destination.clone(), token_program.clone()],
+        )
+    } else {
+        invoke(
+            &token_instruction::mint_to_checked(
+                token_program.key,
+                output_mint.key,
+                destination.key,
+                authority.key,
+                &[],
+                output_amount,
+                6,
+            )?,
+            &[
+                output_mint.clone(),
+                destination.clone(),
+                authority.clone(),
+                token_program.clone(),
+            ],
+        )
+    }
 }
 
 struct TestHarness {
@@ -228,6 +247,7 @@ struct TestHarness {
     usdc_mint: Pubkey,
     token_mint: Pubkey,
     gas_funder: Pubkey,
+    native_output_wsol: Pubkey,
     strategy_id: [u8; 32],
 }
 
@@ -242,6 +262,7 @@ impl TestHarness {
         let usdc_mint = Pubkey::new_unique();
         let token_mint = Pubkey::new_unique();
         let gas_funder = Pubkey::find_program_address(&[GAS_FUNDER_SEED], &jupiter_program).0;
+        let native_output_wsol = Pubkey::new_unique();
         let strategy_id = strategy_id("strategy-a");
         let strategy = strategy_pda(&program_id, &owner.pubkey(), &strategy_id);
         let vault_authority =
@@ -267,6 +288,10 @@ impl TestHarness {
         program_test.add_account(usdc_mint, mint_account(6, vault_authority, LIMIT_USDC));
         program_test.add_account(token_mint, mint_account(6, vault_authority, 0));
         program_test.add_account(
+            spl_token::native_mint::id(),
+            mint_account(9, vault_authority, 0),
+        );
+        program_test.add_account(
             get_associated_token_address(&vault_authority, &spl_token::native_mint::id()),
             native_token_account(vault_authority, 1_000_000_000),
         );
@@ -279,6 +304,10 @@ impl TestHarness {
                 executable: false,
                 rent_epoch: 0,
             },
+        );
+        program_test.add_account(
+            native_output_wsol,
+            native_token_account(vault_authority, 2_000_000_000),
         );
         program_test.add_account(
             get_associated_token_address(&owner.pubkey(), &usdc_mint),
@@ -333,6 +362,7 @@ impl TestHarness {
             usdc_mint,
             token_mint,
             gas_funder,
+            native_output_wsol,
             strategy_id,
         };
         (harness, banks_client, payer)
@@ -661,6 +691,167 @@ impl TestHarness {
                 treasury: self.treasury.pubkey(),
                 jupiter_data,
                 gas_jupiter_data: gas_payload,
+            }
+            .try_to_vec()
+            .unwrap(),
+        }
+    }
+
+    fn execute_swap_with_fees_v2_separate_ix(
+        &self,
+        gas_recipient: Pubkey,
+        gas_lamports_out: u64,
+        min_native_out: u64,
+    ) -> Instruction {
+        let mut instruction = self.execute_swap_with_fees_ix(
+            true,
+            200_000_000,
+            90_000_000,
+            1_000_000,
+            500_000,
+            200_000_000,
+            100_000_000,
+            500_000,
+            gas_lamports_out,
+            min_native_out,
+        );
+        let mut jupiter_data = 200_000_000u64.to_le_bytes().to_vec();
+        jupiter_data.extend_from_slice(&100_000_000u64.to_le_bytes());
+        let mut gas_jupiter_data = vec![7];
+        gas_jupiter_data.extend_from_slice(&500_000u64.to_le_bytes());
+        gas_jupiter_data.extend_from_slice(&gas_lamports_out.to_le_bytes());
+        instruction.data = StrategySpendInstruction::ExecuteSwapWithFeesV2 {
+            is_buy: true,
+            usdc_amount: 200_000_000,
+            token_amount: 90_000_000,
+            platform_fee_usdc: 1_000_000,
+            gas_mode: GasMode::Separate,
+            gas_top_up_usdc: 500_000,
+            native_amount: min_native_out,
+            treasury: self.treasury.pubkey(),
+            gas_recipient,
+            jupiter_data,
+            gas_jupiter_data,
+        }
+        .try_to_vec()
+        .unwrap();
+        instruction
+    }
+
+    fn execute_swap_with_fees_v2_credit_only_ix(&self) -> Instruction {
+        let mut instruction = self.execute_swap_with_fees_ix(
+            true,
+            200_000_000,
+            90_000_000,
+            0,
+            0,
+            200_000_000,
+            100_000_000,
+            0,
+            0,
+            0,
+        );
+        let mut jupiter_data = 200_000_000u64.to_le_bytes().to_vec();
+        jupiter_data.extend_from_slice(&100_000_000u64.to_le_bytes());
+        instruction.data = StrategySpendInstruction::ExecuteSwapWithFeesV2 {
+            is_buy: true,
+            usdc_amount: 200_000_000,
+            token_amount: 90_000_000,
+            platform_fee_usdc: 0,
+            gas_mode: GasMode::CreditOnly,
+            gas_top_up_usdc: 0,
+            native_amount: 0,
+            treasury: self.treasury.pubkey(),
+            gas_recipient: self.relayer.pubkey(),
+            jupiter_data,
+            gas_jupiter_data: vec![],
+        }
+        .try_to_vec()
+        .unwrap();
+        instruction
+    }
+
+    fn execute_native_output_ix(
+        &self,
+        gas_recipient: Pubkey,
+        native_amount: u64,
+        actual_output: u64,
+    ) -> Instruction {
+        let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
+        let vault_authority =
+            Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &self.program_id).0;
+        let program_authority = Pubkey::find_program_address(
+            &[AUTHORITY_SEED, self.owner.pubkey().as_ref()],
+            &self.program_id,
+        )
+        .0;
+        let strategy_usdc = get_associated_token_address(&vault_authority, &self.usdc_mint);
+        let strategy_wsol =
+            get_associated_token_address(&vault_authority, &spl_token::native_mint::id());
+        let asset = Pubkey::find_program_address(
+            &[
+                ASSET_SEED,
+                strategy.as_ref(),
+                spl_token::native_mint::id().as_ref(),
+            ],
+            &self.program_id,
+        )
+        .0;
+        let total_input = 200_500_000u64;
+        let mut jupiter_data = total_input.to_le_bytes().to_vec();
+        jupiter_data.extend_from_slice(&actual_output.to_le_bytes());
+        Instruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta::new_readonly(self.session.pubkey(), true),
+                AccountMeta::new(self.relayer.pubkey(), true),
+                AccountMeta::new_readonly(self.owner.pubkey(), false),
+                AccountMeta::new_readonly(
+                    wallet_pda(&self.program_id, &self.owner.pubkey()),
+                    false,
+                ),
+                AccountMeta::new(strategy, false),
+                AccountMeta::new_readonly(vault_authority, false),
+                AccountMeta::new(
+                    get_associated_token_address(&self.owner.pubkey(), &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new(
+                    get_associated_token_address(&self.treasury.pubkey(), &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new(strategy_usdc, false),
+                AccountMeta::new(strategy_wsol, false),
+                AccountMeta::new(asset, false),
+                AccountMeta::new_readonly(spl_token::native_mint::id(), false),
+                AccountMeta::new_readonly(self.usdc_mint, false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_associated_token_account::id(), false),
+                AccountMeta::new_readonly(system_program::id(), false),
+                AccountMeta::new_readonly(program_authority, false),
+                AccountMeta::new_readonly(self.jupiter_program, false),
+                AccountMeta::new(self.native_output_wsol, false),
+                AccountMeta::new_readonly(vault_authority, false),
+                AccountMeta::new(strategy_usdc, false),
+                AccountMeta::new(strategy_wsol, false),
+                AccountMeta::new(self.usdc_mint, false),
+                AccountMeta::new(spl_token::native_mint::id(), false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new(self.gas_funder, false),
+                AccountMeta::new_readonly(system_program::id(), false),
+            ],
+            data: StrategySpendInstruction::ExecuteSwapWithFeesV2 {
+                is_buy: true,
+                usdc_amount: 200_000_000,
+                token_amount: 90_000_000,
+                platform_fee_usdc: 0,
+                gas_mode: GasMode::NativeOutput,
+                gas_top_up_usdc: 500_000,
+                native_amount,
+                treasury: self.treasury.pubkey(),
+                gas_recipient,
+                jupiter_data,
+                gas_jupiter_data: vec![],
             }
             .try_to_vec()
             .unwrap(),
@@ -1131,6 +1322,161 @@ async fn execute_swap_with_fees_sell_applies_fees_after_swap() {
     let state = h.read_strategy(&mut banks_client).await;
     assert_eq!(state.deployed_usdc, 100_000_000);
     assert_eq!(state.capacity_usdc, 980_000_000 - 1_000_000 - 500_000);
+}
+
+#[tokio::test]
+async fn execute_swap_v2_separate_logs_verified_native_credit() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    let instruction =
+        h.execute_swap_with_fees_v2_separate_ix(h.relayer.pubkey(), 10_000_000, 9_000_000);
+    let blockhash = banks_client.get_latest_blockhash().await.unwrap();
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&h.relayer.pubkey()),
+        &[&h.relayer, &h.session],
+        blockhash,
+    );
+    let result = banks_client
+        .process_transaction_with_metadata(transaction)
+        .await
+        .unwrap();
+    result.result.unwrap();
+    let expected = format!(
+        "Program log: POCKLESS_GAS_CREDIT_V1:separate:{}:{}:10000000",
+        strategy_pda(&h.program_id, &h.owner.pubkey(), &h.strategy_id),
+        h.relayer.pubkey()
+    );
+    assert!(result.metadata.unwrap().log_messages.contains(&expected));
+}
+
+#[tokio::test]
+async fn execute_swap_v2_rejects_gas_recipient_mismatch() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    assert!(send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.execute_swap_with_fees_v2_separate_ix(Pubkey::new_unique(), 10_000_000, 9_000_000),
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn execute_swap_v2_credit_only_uses_existing_credit_without_new_debit() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.execute_swap_with_fees_v2_credit_only_ix(),
+    )
+    .await
+    .unwrap();
+
+    let state = h.read_strategy(&mut banks_client).await;
+    assert_eq!(state.deployed_usdc, 200_000_000);
+    assert_eq!(state.capacity_usdc, LIMIT_USDC);
+}
+
+#[tokio::test]
+async fn execute_swap_v2_native_output_splits_gas_and_records_net_inventory() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    let instruction = h.execute_native_output_ix(h.relayer.pubkey(), 10_000_000, 100_000_000);
+    let blockhash = banks_client.get_latest_blockhash().await.unwrap();
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&h.relayer.pubkey()),
+        &[&h.relayer, &h.session],
+        blockhash,
+    );
+    let result = banks_client
+        .process_transaction_with_metadata(transaction)
+        .await
+        .unwrap();
+    result.result.unwrap();
+
+    let strategy = strategy_pda(&h.program_id, &h.owner.pubkey(), &h.strategy_id);
+    let asset_key = Pubkey::find_program_address(
+        &[
+            ASSET_SEED,
+            strategy.as_ref(),
+            spl_token::native_mint::id().as_ref(),
+        ],
+        &h.program_id,
+    )
+    .0;
+    let asset_account = banks_client.get_account(asset_key).await.unwrap().unwrap();
+    let asset = StrategyAsset::try_from_slice(&asset_account.data).unwrap();
+    assert_eq!(asset.quantity, 90_000_000);
+    assert_eq!(asset.cost_usdc, 200_000_000);
+    let state = h.read_strategy(&mut banks_client).await;
+    assert_eq!(state.deployed_usdc, 200_000_000);
+    assert_eq!(state.capacity_usdc, LIMIT_USDC - 500_000);
+    assert!(banks_client
+        .get_account(h.native_output_wsol)
+        .await
+        .unwrap()
+        .is_none());
+    let expected = format!(
+        "Program log: POCKLESS_GAS_CREDIT_V1:native_output:{}:{}:10000000",
+        strategy,
+        h.relayer.pubkey()
+    );
+    assert!(result.metadata.unwrap().log_messages.contains(&expected));
+}
+
+#[tokio::test]
+async fn execute_swap_v2_native_output_rejects_invalid_modes_and_split() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+
+    let mut sell = h.execute_native_output_ix(h.relayer.pubkey(), 10_000_000, 100_000_000);
+    sell.data[1] = 0;
+    assert!(send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        sell,
+    )
+    .await
+    .is_err());
+
+    let mut non_wsol = h.execute_native_output_ix(h.relayer.pubkey(), 10_000_000, 100_000_000);
+    non_wsol.accounts[11].pubkey = h.token_mint;
+    assert!(send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        non_wsol,
+    )
+    .await
+    .is_err());
+
+    let over_split = h.execute_native_output_ix(h.relayer.pubkey(), 100_000_001, 100_000_000);
+    assert!(send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        over_split,
+    )
+    .await
+    .is_err());
+
+    let mut invalid_none = h.execute_native_output_ix(h.relayer.pubkey(), 10_000_000, 100_000_000);
+    invalid_none.data[26] = 0;
+    assert!(send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        invalid_none,
+    )
+    .await
+    .is_err());
 }
 
 #[tokio::test]

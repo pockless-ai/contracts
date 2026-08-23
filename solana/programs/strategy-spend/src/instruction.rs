@@ -1,6 +1,14 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::pubkey::Pubkey;
 
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GasMode {
+    None,
+    CreditOnly,
+    Separate,
+    NativeOutput,
+}
+
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
 pub enum StrategySpendInstruction {
     /// Create the wallet config PDA. Owner must sign.
@@ -45,4 +53,25 @@ pub enum StrategySpendInstruction {
     WithdrawAsset { amount: u64 },
     /// Owner closes the strategy after all positions are flat.
     CloseStrategy,
+    /// V2 fee-aware swap with explicit gas handling. `CreditOnly` consumes no
+    /// USDC because its native gas was funded by an earlier verified top-up.
+    ///
+    /// `usdc_amount` is always the strategy notional. In `NativeOutput` mode Jupiter's
+    /// USDC input is `usdc_amount + gas_top_up_usdc`, `native_amount` is split from the
+    /// WSOL output, and only the remainder is recorded as strategy inventory.
+    /// `gas_jupiter_data` is `[gas_jupiter_account_count: u8][jupiter_ix_data…]` in
+    /// `Separate` mode and empty in every other mode.
+    ExecuteSwapWithFeesV2 {
+        is_buy: bool,
+        usdc_amount: u64,
+        token_amount: u64,
+        platform_fee_usdc: u64,
+        gas_mode: GasMode,
+        gas_top_up_usdc: u64,
+        native_amount: u64,
+        treasury: Pubkey,
+        gas_recipient: Pubkey,
+        jupiter_data: Vec<u8>,
+        gas_jupiter_data: Vec<u8>,
+    },
 }
