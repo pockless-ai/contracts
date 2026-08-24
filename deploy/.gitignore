@@ -1,4 +1,7 @@
 .deploy/
+!.env.example
+!.env.testnet.example
+!.env.mainnet.example
 .env
 .env.testnet
 .env.mainnet
