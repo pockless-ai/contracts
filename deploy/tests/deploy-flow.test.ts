@@ -319,6 +319,7 @@ test("dry-run completes injected preflight without invoking command or RPC bound
       {
         environment: "testnet",
         dryRun: true,
+        fundingCheck: false,
         skipTests: false,
         skipSolanaVerification: true,
         operation: "deploy",
@@ -363,6 +364,7 @@ test(
         {
           environment: "mainnet",
           dryRun: true,
+          fundingCheck: false,
           skipTests: false,
           skipSolanaVerification: false,
           operation: "deploy",
@@ -430,6 +432,103 @@ test(
   }
 )
 
+test("funding-check skips setup and does not write a manifest", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pockless-funding-check-"))
+  const manifestPath = join(directory, "mainnet.json")
+  const logs: string[] = []
+  try {
+    await runDeploy(
+      {
+        environment: "mainnet",
+        dryRun: false,
+        fundingCheck: true,
+        skipTests: false,
+        skipSolanaVerification: false,
+        operation: "deploy",
+        forceBroadcast: false,
+        safetyBufferPercent: 20,
+        source: {},
+      },
+      {
+        run: async () => {
+          throw new Error("command boundary must not run")
+        },
+        log: (message) => logs.push(message),
+        setup: async () => {
+          throw new Error("setup must not run")
+        },
+        preflight: async (target) => ({
+          artifactHash: `hash-${target.key}`,
+          funding: {
+            status: "checked" as const,
+            asset: target.family === "solana" ? "SOL" : "ETH",
+            decimals: target.family === "solana" ? 9 : 18,
+            balance: 2n,
+            estimated: 1n,
+            required: 1n,
+            deficit: 0n,
+          },
+        }),
+        manifestPath,
+      }
+    )
+    assert.ok(
+      logs.some((message) => message.startsWith("Funding summary:"))
+    )
+    assert.equal(await loadManifest(manifestPath), undefined)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("funding-check reports deficits without writing a failed manifest", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pockless-funding-deficit-"))
+  const manifestPath = join(directory, "mainnet.json")
+  try {
+    await assert.rejects(
+      runDeploy(
+        {
+          environment: "mainnet",
+          dryRun: false,
+          fundingCheck: true,
+          skipTests: false,
+          skipSolanaVerification: false,
+          operation: "deploy",
+          forceBroadcast: false,
+          safetyBufferPercent: 20,
+          source: {},
+        },
+        {
+          run: async () => {
+            throw new Error("command boundary must not run")
+          },
+          log: () => undefined,
+          setup: async () => {
+            throw new Error("setup must not run")
+          },
+          preflight: async (target) => ({
+            artifactHash: `hash-${target.key}`,
+            funding: {
+              status: "checked" as const,
+              asset: target.family === "solana" ? "SOL" : "ETH",
+              decimals: target.family === "solana" ? 9 : 18,
+              balance: 0n,
+              estimated: 1n,
+              required: 1n,
+              deficit: 1n,
+            },
+          }),
+          manifestPath,
+        }
+      ),
+      /ethereum deployer is underfunded/
+    )
+    assert.equal(await loadManifest(manifestPath), undefined)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test("dry-run preserves a completed resumable deployment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pockless-dry-run-resume-"))
   const manifestPath = join(directory, "testnet.json")
@@ -449,6 +548,7 @@ test("dry-run preserves a completed resumable deployment", async () => {
       {
         environment: "testnet",
         dryRun: true,
+        fundingCheck: false,
         skipTests: false,
         skipSolanaVerification: true,
         operation: "deploy",
@@ -499,6 +599,7 @@ test("upgrade advances an incomplete release without replacing unchanged complet
       {
         environment: "testnet",
         dryRun: true,
+        fundingCheck: false,
         skipTests: false,
         skipSolanaVerification: true,
         operation: "upgrade",

@@ -160,7 +160,7 @@ optional BIP39 passphrase:
 RECOVERY_DIR="$HOME/.config/pockless/recovery"
 mkdir -p "$RECOVERY_DIR"
 chmod 700 "$RECOVERY_DIR"
-solana-keygen recover 'prompt:?key=0/0' --outfile "$RECOVERY_DIR/recovered.json"
+solana-keygen recover ASK --outfile "$RECOVERY_DIR/recovered.json"
 chmod 600 "$RECOVERY_DIR/recovered.json"
 solana-keygen pubkey "$RECOVERY_DIR/recovered.json"
 ```
@@ -193,6 +193,40 @@ operations; remove temporary copies afterward. Only the deployer needs SOL for p
 plus the small verification balance reported by preflight. Do not fund the program ID.
 
 Set `SOLANA_FEE_PAYER_KEYPAIR` and `SOLANA_PROGRAM_KEYPAIR` to their absolute paths.
+
+The preferred way to use a signer on another machine is to copy its JSON file over a
+secure channel and run `chmod 600` on it. The JSON file is the raw keypair. If another
+wallet cannot import that file and you must retrieve a private key, confirm the file
+first, then print the base58 secret only in a private, unrecorded local terminal:
+
+```bash
+solana-keygen pubkey "$HOME/.config/pockless/testnet/fee-payer.json"
+```
+
+For mainnet, use `$HOME/.config/pockless/mainnet/solana-deployer.json` or
+`solana-program-id.json` if those are the filenames you created. Then:
+
+```bash
+python3 - "$HOME/.config/pockless/testnet/fee-payer.json" <<'PY'
+import json, sys
+ALPHABET = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+secret = bytes(json.load(open(sys.argv[1])))
+n = int.from_bytes(secret, "big")
+out = bytearray()
+while n:
+    n, r = divmod(n, 58)
+    out.append(ALPHABET[r])
+pad = len(secret) - len(secret.lstrip(b"\x00"))
+sys.stdout.write((ALPHABET[:1] * pad + out[::-1]).decode() + "\n")
+PY
+```
+
+Import that string on the other wallet's private-key screen. The imported address must
+match `solana-keygen pubkey` for the same file. Treat any terminal or clipboard history
+containing it as sensitive. Never paste the key into chat, screenshots, `.env`, shell
+history, or source control. Do not import the program-ID keypair into a daily browser
+wallet, and do not fund it. The seed phrase plus `solana-keygen recover ASK` is the
+normal recovery method; this export is only for apps that require a raw key.
 
 ### 3. Test and build the program
 
@@ -283,7 +317,8 @@ authorization and swaps.
 
 Mainnet funding uses real native assets: ETH or the chain's gas token for every selected EVM
 network, and SOL for the Solana deployer. The preflight reports the required amount for
-each public address before any transaction is signed.
+each public address before any transaction is signed. After the first full dry-run, recheck
+with `yarn deploy --environment mainnet --funding-check`.
 
 ### 3. Run the non-signing preflight
 
@@ -293,7 +328,14 @@ yarn deploy --environment testnet --dry-run
 
 Preflight tests and builds both contracts, validates RPC networks and USDC, verifies signer
 identities, and reports funding deficits. Fund only the displayed public addresses, then
-repeat the dry-run until every deficit is zero.
+recheck balances without rebuilding:
+
+```bash
+yarn deploy --environment testnet --funding-check
+```
+
+Repeat `--funding-check` until every deficit is zero. A full `--dry-run` is still required
+once to produce build artifacts.
 
 ### 4. Deploy
 

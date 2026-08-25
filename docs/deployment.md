@@ -119,6 +119,31 @@ from devnet. Generate them on a trusted encrypted machine, make encrypted offlin
 before deployment, and restore only temporary `chmod 600` copies. Keep the deployer backup
 until verification and the separate immutability operation are complete.
 
+Prefer copying the JSON keypair file over a secure channel. If another wallet cannot
+import that file, print the base58 secret only in a private, unrecorded local terminal:
+
+```bash
+solana-keygen pubkey "$HOME/.config/pockless/testnet/fee-payer.json"
+python3 - "$HOME/.config/pockless/testnet/fee-payer.json" <<'PY'
+import json, sys
+ALPHABET = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+secret = bytes(json.load(open(sys.argv[1])))
+n = int.from_bytes(secret, "big")
+out = bytearray()
+while n:
+    n, r = divmod(n, 58)
+    out.append(ALPHABET[r])
+pad = len(secret) - len(secret.lstrip(b"\x00"))
+sys.stdout.write((ALPHABET[:1] * pad + out[::-1]).decode() + "\n")
+PY
+```
+
+Use the matching mainnet path (`solana-deployer.json` or `solana-program-id.json`) when
+exporting a production key. The imported address must match `solana-keygen pubkey` for
+that file. Never place the output in chat, screenshots, `.env`, shell history, or source
+control. Do not import or fund the program-ID keypair in a daily browser wallet. The
+seed phrase plus `solana-keygen recover ASK` is the normal recovery method.
+
 Run a complete non-signing preflight, fund the reported public addresses manually, then
 repeat until every deficit is zero:
 
@@ -127,14 +152,24 @@ yarn deploy --environment testnet --dry-run
 yarn deploy --environment mainnet --dry-run
 ```
 
+After a successful dry-run has produced build artifacts, recheck balances without tests,
+rebuilds, or Foundry unlock:
+
+```bash
+yarn deploy --environment testnet --funding-check
+yarn deploy --environment mainnet --funding-check
+```
+
 Preflight checks tools, release metadata, tests/builds, RPC chain IDs/genesis hashes,
-USDC code and decimals/mint existence, artifact hashes, and balances. EVM gas is estimated
+USDC code and decimals/mint existence, artifact hashes, and balances. `--funding-check`
+reuses those artifacts and only repeats RPC, USDC, and balance checks. EVM gas is estimated
 over RPC. Solana reports a deliberately conservative rent estimate based on program size;
 it is not presented as an exact deployment quote. The default 20% buffer can be changed
 with `--safety-buffer-percent`. No funding or sweeping is automated.
 
 Deploy with the same command minus `--dry-run`. Mainnet requires a clean pushed commit,
-an attached TTY, and the exact prompted phrase. `--skip-tests`,
+an attached TTY, and the exact prompted phrase. `--funding-check` is allowed on mainnet.
+`--skip-tests`,
 `--skip-solana-verification`, and `--force-broadcast` are testnet-only.
 `--force-broadcast` is a narrow recovery option for an incomplete target whose recorded
 transaction cannot be resumed. Testnet verification may be left pending only with the

@@ -24,6 +24,7 @@ function parse(argv: string[]) {
     if (
       [
         "dry-run",
+        "funding-check",
         "skip-tests",
         "skip-solana-verification",
         "force-broadcast",
@@ -42,6 +43,7 @@ function parse(argv: string[]) {
   const allowed = new Set([
     "environment",
     "dry-run",
+    "funding-check",
     "skip-tests",
     "skip-solana-verification",
     "force-broadcast",
@@ -59,6 +61,7 @@ function usage() {
 
 Usage:
   yarn deploy --environment testnet|mainnet [--dry-run]
+  yarn deploy --environment testnet|mainnet --funding-check
   yarn upgrade --environment testnet|mainnet [--dry-run]
   yarn immutable --environment mainnet
 
@@ -68,6 +71,7 @@ Testnet-only flags:
   --force-broadcast                Re-broadcast an incomplete recorded target
 
 Options:
+  --funding-check                    Recheck deployer balances only
   --safety-buffer-percent <integer>  Funding buffer (default 20)
 `)
 }
@@ -94,7 +98,11 @@ async function main() {
       ? `Loaded deployment environment from ${loaded.loadedFiles.join(", ")}.`
       : `No deployment environment files found; using exported variables.`
   )
-  assertInteractiveMainnet(environment)
+  const fundingCheck = flags["funding-check"] === true
+  if (command === "immutable" && fundingCheck) {
+    throw new Error("immutable does not accept --funding-check")
+  }
+  if (!fundingCheck) assertInteractiveMainnet(environment)
   if (command === "immutable") {
     if (environment !== "mainnet") {
       throw new Error("immutable is restricted to mainnet")
@@ -107,7 +115,10 @@ async function main() {
     throw new Error("upgrade does not accept --force-broadcast")
   }
   const dryRun = flags["dry-run"] === true
-  if (environment === "mainnet" && !dryRun) {
+  if (fundingCheck && flags["force-broadcast"] === true) {
+    throw new Error("--funding-check cannot be combined with --force-broadcast")
+  }
+  if (environment === "mainnet" && !dryRun && !fundingCheck) {
     await confirmExact(
       command === "upgrade"
         ? upgradePhrase(environment)
@@ -125,6 +136,7 @@ async function main() {
   await runDeploy({
     environment: environment as Environment,
     dryRun,
+    fundingCheck,
     skipTests: flags["skip-tests"] === true,
     skipSolanaVerification: flags["skip-solana-verification"] === true,
     operation: command,
@@ -133,9 +145,11 @@ async function main() {
     source: env,
   })
   console.log(
-    dryRun
-      ? "Preflight complete; no transactions were signed or broadcast."
-      : "Deployment complete."
+    fundingCheck
+      ? "Funding check complete; no transactions were signed or broadcast."
+      : dryRun
+        ? "Preflight complete; no transactions were signed or broadcast."
+        : "Deployment complete."
   )
 }
 

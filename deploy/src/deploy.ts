@@ -75,6 +75,7 @@ type FundingCheck =
 export type DeployOptions = {
   environment: Environment
   dryRun: boolean
+  fundingCheck: boolean
   skipTests: boolean
   skipSolanaVerification: boolean
   operation: "deploy" | "upgrade"
@@ -98,6 +99,19 @@ function required(source: Record<string, string | undefined>, key: string) {
   const value = source[key]?.trim()
   if (!value) throw new Error(`${key} is required`)
   return value
+}
+
+async function requireExistingArtifacts() {
+  try {
+    await access(
+      join(evmRoot, "out/SessionSpend7702.sol/SessionSpend7702.json")
+    )
+    await access(solanaArtifact)
+  } catch {
+    throw new Error(
+      "funding check requires existing build artifacts; run a full --dry-run once first"
+    )
+  }
 }
 
 function safeError(error: unknown, source: Record<string, string | undefined>) {
@@ -540,14 +554,16 @@ async function preflightEvm(
 ) {
   const rpc = requiredRpc(target, options.source)
   const sender = getAddress(required(options.source, "EVM_DEPLOYER_ADDRESS"))
-  required(options.source, "ETHERSCAN_API_KEY")
-  const derivedAccount = await foundryAccount(run, options.source)
-  const account = derivedAccount.account
-  const derivedSender = derivedAccount.address
-  if (derivedSender !== sender) {
-    throw new Error(
-      `${target.name} EVM_DEPLOYER_ADDRESS does not match the Foundry account`
-    )
+  let account = ""
+  if (!options.fundingCheck) {
+    required(options.source, "ETHERSCAN_API_KEY")
+    const derivedAccount = await foundryAccount(run, options.source)
+    account = derivedAccount.account
+    if (derivedAccount.address !== sender) {
+      throw new Error(
+        `${target.name} EVM_DEPLOYER_ADDRESS does not match the Foundry account`
+      )
+    }
   }
   const client = createPublicClient({ transport: http(rpc) })
   const actualChainId = await client.getChainId()
@@ -1089,16 +1105,24 @@ export async function runDeploy(
   if (options.operation === "upgrade" && options.forceBroadcast) {
     throw new Error("upgrade does not accept --force-broadcast")
   }
+  if (options.fundingCheck && options.forceBroadcast) {
+    throw new Error("--funding-check cannot be combined with --force-broadcast")
+  }
   const targets = loadTargets(options.environment, options.source)
   if (!dependencies.preflight) {
     for (const target of targets) requiredRpc(target, options.source)
-    required(options.source, "EVM_FOUNDRY_ACCOUNT")
     required(options.source, "EVM_DEPLOYER_ADDRESS")
-    required(options.source, "ETHERSCAN_API_KEY")
+    if (!options.fundingCheck) {
+      required(options.source, "EVM_FOUNDRY_ACCOUNT")
+      required(options.source, "ETHERSCAN_API_KEY")
+    }
     resolveSolanaKeypairs(options.source)
   }
   let commit: string
-  if (dependencies.setup) {
+  if (options.fundingCheck) {
+    if (!dependencies.preflight) await requireExistingArtifacts()
+    commit = "funding-check"
+  } else if (dependencies.setup) {
     commit = (await dependencies.setup()).releaseCommit
   } else {
     await runStage(dependencies.log, "Checking required deployment tools", () =>
@@ -1157,7 +1181,9 @@ export async function runDeploy(
     join(manifestDirectory, `${options.environment}.json`)
   let manifest = await loadManifest(path)
   let advancingRelease = false
-  if (!manifest) {
+  if (options.fundingCheck) {
+    manifest ??= newManifest(options.environment, commit)
+  } else if (!manifest) {
     if (options.operation === "upgrade") {
       throw new Error(
         `cannot upgrade before ${options.environment} has a deployment manifest`
@@ -1177,6 +1203,7 @@ export async function runDeploy(
   }
 
   if (
+    !options.fundingCheck &&
     !dependencies.preflight &&
     targets.some((target) => target.family === "evm")
   ) {
@@ -1242,17 +1269,21 @@ export async function runDeploy(
           error !== undefined
             ? safeError(error, options.source)
             : underfundedMessage(target, preflight!.funding!)
-        manifest.targets[target.key] = {
-          ...(existing ?? { family: target.family, name: target.name }),
-          status: "failed",
-          error: message,
+        if (!options.fundingCheck) {
+          manifest.targets[target.key] = {
+            ...(existing ?? { family: target.family, name: target.name }),
+            status: "failed",
+            error: message,
+          }
         }
         return `${target.name}: ${message}`
       }
     )
-    await saveManifest(path, manifest)
+    if (!options.fundingCheck) await saveManifest(path, manifest)
     throw new Error(`preflight failed:\n${errors.join("\n")}`)
   }
+
+  if (options.fundingCheck) return manifest
 
   const preflights = new Map<string, PreflightResult>()
   for (const outcome of outcomes) {
