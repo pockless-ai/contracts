@@ -293,6 +293,12 @@ async function sha256(path: string) {
     .digest("hex")
 }
 
+function solanaExecutableHash(bytes: Uint8Array) {
+  let end = bytes.length
+  while (end > 0 && bytes[end - 1] === 0) end -= 1
+  return createHash("sha256").update(bytes.subarray(0, end)).digest("hex")
+}
+
 async function solanaProgramHash(
   run: RunCommand,
   rpc: string,
@@ -312,7 +318,7 @@ async function solanaProgramHash(
       "--keypair",
       keypair,
     ])
-    return await sha256(output)
+    return solanaExecutableHash(await readFile(output))
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
