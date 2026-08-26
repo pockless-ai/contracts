@@ -6,8 +6,13 @@
       "chainId": 1,
       "rpc": "https://eth.llamarpc.com",
       "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-      "implementation": "0x0000000000000000000000000000000000000000",
-      "status": "not-deployed"
+      "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
+      "status": "deployed",
+      "txHash": "0x51d516712f706d8632b06b2e5fbd7158fbb5da2a4f9f67688aaedb9a9de400cc",
+      "codeHash": "0x21b0a4983c45f3e62c434cb3f1facc8255b3ac76f2dfb7d946d77029bac2e666",
+      "verifiedAt": "2026-08-25T23:06:20.608Z",
+      "releaseCommit": "2e685d895bbb0d45a63220a25bab216306f42f5c",
+      "releases": []
     },
     "10": {
       "name": "optimism",
@@ -15,8 +20,13 @@
       "chainId": 10,
       "rpc": "https://mainnet.optimism.io",
       "usdc": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
-      "implementation": "0x0000000000000000000000000000000000000000",
-      "status": "not-deployed"
+      "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
+      "status": "deployed",
+      "txHash": "0x22ff8e9fbbbc4523354a99ed6f24dcb15476090f0730cb660c31a7be4ac5f6e8",
+      "codeHash": "0x73f8e2f1bea1ad6e5c88443f6cdc69fa1e161fefd3a925c55713b3d4d5ba025b",
+      "verifiedAt": "2026-08-25T23:09:01.747Z",
+      "releaseCommit": "2e685d895bbb0d45a63220a25bab216306f42f5c",
+      "releases": []
     },
     "56": {
       "name": "bnb",
@@ -24,8 +34,13 @@
       "chainId": 56,
       "rpc": "https://bsc-dataseed.bnbchain.org",
       "usdc": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
-      "implementation": "0x0000000000000000000000000000000000000000",
-      "status": "not-deployed"
+      "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
+      "status": "deployed",
+      "txHash": "0xd8c5facab5c751da3c4ac0dd982d74cd46e782dde6c1f85d571fe287060710d2",
+      "codeHash": "0x369448c85ec63354e79f8d89dc5333525b011afbb36245df042d4f5b293edb9a",
+      "verifiedAt": "2026-08-25T23:10:27.218Z",
+      "releaseCommit": "2e685d895bbb0d45a63220a25bab216306f42f5c",
+      "releases": []
     },
     "137": {
       "name": "polygon",
@@ -33,8 +48,13 @@
       "chainId": 137,
       "rpc": "https://polygon-rpc.com",
       "usdc": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-      "implementation": "0x0000000000000000000000000000000000000000",
-      "status": "not-deployed"
+      "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
+      "status": "deployed",
+      "txHash": "0x6285c19a7ba38f4f330610ccfa169a7c4f766c51f99ddba521d6d603b3cace00",
+      "codeHash": "0xa87a22409f21e194043408f92070561a0944a56de84d1fc2155144159fdf0434",
+      "verifiedAt": "2026-08-25T23:09:47.353Z",
+      "releaseCommit": "2e685d895bbb0d45a63220a25bab216306f42f5c",
+      "releases": []
     },
     "8453": {
       "name": "base",
@@ -42,8 +62,13 @@
       "chainId": 8453,
       "rpc": "https://mainnet.base.org",
       "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-      "implementation": "0x0000000000000000000000000000000000000000",
-      "status": "not-deployed"
+      "implementation": "0x739a8eF0A0f8aFb3909070e77D9963029C1D2508",
+      "status": "deployed",
+      "txHash": "0xef8246c5bd4b02a91827bb1b542b3ed892f713f64a0f5d185e4f57e10f4752c5",
+      "codeHash": "0x6eb8c161e9cc594c620c97b3daca7c608492e86fa73cf2d36026bc83bf48b93e",
+      "verifiedAt": "2026-08-25T23:07:01.889Z",
+      "releaseCommit": "2e685d895bbb0d45a63220a25bab216306f42f5c",
+      "releases": []
     },
     "42161": {
       "name": "arbitrum",
@@ -51,8 +76,13 @@
       "chainId": 42161,
       "rpc": "https://arb1.arbitrum.io/rpc",
       "usdc": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
-      "implementation": "0x0000000000000000000000000000000000000000",
-      "status": "not-deployed"
+      "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
+      "status": "deployed",
+      "txHash": "0xe34f140c75fcf3f870ad41a6414e27dd3c4aaa26c1ee06d83826c171cb0edb9c",
+      "codeHash": "0xdecda9916538952dd333cd5dced7d48ab05ba1b06e69636cf09156a47b3fa7de",
+      "verifiedAt": "2026-08-25T23:08:22.188Z",
+      "releaseCommit": "2e685d895bbb0d45a63220a25bab216306f42f5c",
+      "releases": []
     },
     "84532": {
       "name": "base-sepolia",
@@ -107,9 +137,13 @@
       "name": "mainnet-beta",
       "tier": "mainnet",
       "rpc": "https://api.mainnet-beta.solana.com",
-      "programId": "11111111111111111111111111111111",
+      "programId": "HDTbJM8xLj9LbWGxG7BqZqtACoKmwVmXvFLpCQBgLztU",
       "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-      "status": "not-deployed"
+      "status": "deployed",
+      "programHash": "1d038bc47f68879cae02efefc9daa230723dea58cdf0a482908e77b9e5e3ae15",
+      "verifiedAt": "2026-08-25T23:46:09.992Z",
+      "releaseCommit": "2e685d895bbb0d45a63220a25bab216306f42f5c",
+      "releases": []
     },
     "devnet": {
       "name": "devnet",
