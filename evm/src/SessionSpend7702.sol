@@ -161,6 +161,51 @@ library RelayDepositIntentHash {
     }
 }
 
+struct WalletRelaySwapIntentPayload {
+    uint256 nonce;
+    uint256 deadline;
+    address sellToken;
+    uint256 sellAmount;
+    address destRecipient;
+    bytes32 relayCalldataHash;
+    bytes32 relayRequestId;
+    uint256 platformFeeUsdc;
+    address feeRecipient;
+}
+
+library WalletRelaySwapIntentHash {
+    bytes32 internal constant TYPEHASH = keccak256(
+        "WalletRelaySwapIntent(uint256 nonce,uint256 deadline,address sellToken,uint256 sellAmount,address destRecipient,bytes32 relayCalldataHash,bytes32 relayRequestId,uint256 platformFeeUsdc,address feeRecipient)"
+    );
+
+    function digest(WalletRelaySwapIntentPayload memory intent, bytes32 domainSeparator)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                domainSeparator,
+                keccak256(
+                    abi.encode(
+                        TYPEHASH,
+                        intent.nonce,
+                        intent.deadline,
+                        intent.sellToken,
+                        intent.sellAmount,
+                        intent.destRecipient,
+                        intent.relayCalldataHash,
+                        intent.relayRequestId,
+                        intent.platformFeeUsdc,
+                        intent.feeRecipient
+                    )
+                )
+            )
+        );
+    }
+}
+
 library CreditUsdcReturnIntentHash {
     bytes32 internal constant TYPEHASH = keccak256(
         "CreditUsdcReturnIntent(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,uint256 usdcReceived,uint256 costReleasedUsdc,uint256 platformFeeUsdc,address feeRecipient)"
@@ -368,6 +413,18 @@ contract SessionSpend7702 {
         address feeRecipient;
     }
 
+    struct WalletRelaySwapIntent {
+        uint256 nonce;
+        uint256 deadline;
+        address sellToken;
+        uint256 sellAmount;
+        address destRecipient;
+        bytes32 relayCalldataHash;
+        bytes32 relayRequestId;
+        uint256 platformFeeUsdc;
+        address feeRecipient;
+    }
+
     struct Layout {
         uint256 locked;
         bytes32[] strategyIds;
@@ -376,6 +433,7 @@ contract SessionSpend7702 {
         mapping(bytes32 => mapping(address => uint256)) sessionKeyIndex;
         mapping(bytes32 => mapping(address => Session)) sessions;
         mapping(bytes32 => mapping(address => AssetRecord)) assets;
+        uint256 walletRelayNonce;
     }
 
     error NotOwner();
@@ -460,6 +518,16 @@ contract SessionSpend7702 {
         uint256 usdcReceived,
         uint256 costReleasedUsdc,
         int256 realizedPnlUsdc
+    );
+    event WalletRelaySwapExecuted(
+        uint256 indexed nonce,
+        address sellToken,
+        uint256 sellAmount,
+        address destRecipient,
+        bytes32 relayRequestId
+    );
+    event WalletPlatformFeeCharged(
+        address indexed feeRecipient, uint256 platformFeeUsdc
     );
 
     modifier onlyOwner() {
@@ -634,6 +702,56 @@ contract SessionSpend7702 {
             intent.destToken,
             intent.minDestAmount,
             intent.destRecipient
+        );
+    }
+
+    function walletRelayNonce() external view returns (uint256) {
+        return _layout().walletRelayNonce;
+    }
+
+    function executeWalletRelaySwap(
+        WalletRelaySwapIntent calldata intent,
+        address relayTarget,
+        bytes calldata relayCalldata,
+        uint256 relayValue,
+        bytes calldata ownerSignature
+    ) external payable nonReentrant {
+        if (block.timestamp > intent.deadline) revert IntentExpired();
+        Layout storage $ = _layout();
+        if ($.walletRelayNonce != intent.nonce) revert NonceMismatch();
+
+        bytes32 relayCallHash = keccak256(abi.encode(relayTarget, relayValue, relayCalldata));
+        if (relayCallHash != intent.relayCalldataHash) revert InvalidIntent();
+        _validateRelayTarget(relayTarget);
+
+        bytes32 digest = WalletRelaySwapIntentHash.digest(
+            _walletRelaySwapPayload(intent), _domainSeparatorV4()
+        );
+        if (_recover(digest, ownerSignature) != address(this)) revert InvalidSignature();
+
+        if (intent.sellToken == address(0)) {
+            if (address(this).balance < intent.sellAmount) revert InsufficientInventory();
+        } else if (IERC20(intent.sellToken).balanceOf(address(this)) < intent.sellAmount) {
+            revert InsufficientInventory();
+        }
+
+        uint256 relayAmount = intent.sellAmount;
+        if (intent.sellToken == usdcToken) {
+            _chargeWalletPlatformFee(intent);
+            relayAmount = intent.sellAmount - intent.platformFeeUsdc;
+        } else if (intent.platformFeeUsdc != 0 || intent.feeRecipient != address(0)) {
+            revert InvalidIntent();
+        }
+
+        _executeRelayCall(intent.sellToken, relayAmount, relayTarget, relayCalldata, relayValue);
+
+        $.walletRelayNonce += 1;
+        emit WalletRelaySwapExecuted(
+            intent.nonce,
+            intent.sellToken,
+            intent.sellAmount,
+            intent.destRecipient,
+            intent.relayRequestId
         );
     }
 
@@ -1497,6 +1615,10 @@ contract SessionSpend7702 {
         return _domainSeparatorForVersion("3");
     }
 
+    function _domainSeparatorV4() private view returns (bytes32) {
+        return _domainSeparatorForVersion("4");
+    }
+
     function _relayDepositPayload(RelayDepositIntent calldata intent)
         private
         pure
@@ -1578,6 +1700,37 @@ contract SessionSpend7702 {
         emit PlatformFeeCharged(
             intent.strategyId, intent.sessionKey, intent.feeRecipient, intent.platformFeeUsdc
         );
+    }
+
+    function _walletRelaySwapPayload(WalletRelaySwapIntent calldata intent)
+        private
+        pure
+        returns (WalletRelaySwapIntentPayload memory payload)
+    {
+        payload = WalletRelaySwapIntentPayload({
+            nonce: intent.nonce,
+            deadline: intent.deadline,
+            sellToken: intent.sellToken,
+            sellAmount: intent.sellAmount,
+            destRecipient: intent.destRecipient,
+            relayCalldataHash: intent.relayCalldataHash,
+            relayRequestId: intent.relayRequestId,
+            platformFeeUsdc: intent.platformFeeUsdc,
+            feeRecipient: intent.feeRecipient
+        });
+    }
+
+    function _chargeWalletPlatformFee(WalletRelaySwapIntent calldata intent) private {
+        if (intent.platformFeeUsdc == 0) {
+            if (intent.feeRecipient != address(0)) revert InvalidIntent();
+            return;
+        }
+        if (intent.feeRecipient == address(0)) revert InvalidIntent();
+        if (intent.platformFeeUsdc > intent.sellAmount) revert InvalidIntent();
+        if (!IERC20(usdcToken).transfer(intent.feeRecipient, intent.platformFeeUsdc)) {
+            revert CallFailed("");
+        }
+        emit WalletPlatformFeeCharged(intent.feeRecipient, intent.platformFeeUsdc);
     }
 
     function _domainSeparatorForVersion(string memory version) private view returns (bytes32) {

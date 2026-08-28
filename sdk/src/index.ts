@@ -13,6 +13,7 @@ export {
   SESSION_SPEND_VERSION,
   SESSION_SPEND_V2_VERSION,
   SESSION_SPEND_V3_VERSION,
+  SESSION_SPEND_V4_VERSION,
   EVM_NATIVE_TOKEN,
   ZEROX_NATIVE_TOKEN,
   GasFundingMode,
@@ -27,6 +28,7 @@ export {
   encodeExecuteSwapWithFees,
   encodeExecuteSwapWithFeesV2,
   encodeExecuteRelayDeposit,
+  encodeExecuteWalletRelaySwap,
   encodeCreditUsdcReturn,
   strategyIdFromCuid,
   revokeIntentTypes,
@@ -38,6 +40,8 @@ export {
   creditUsdcReturnIntentTypes,
   relayDepositIntentDomain,
   creditUsdcReturnIntentDomain,
+  walletRelaySwapIntentTypes,
+  walletRelaySwapIntentDomain,
   hashRelayCalldata,
 } from "./evm/session-spend-7702"
 
@@ -76,4 +80,5 @@ export type {
   SwapBundleIntentV2Message,
   RelayDepositIntentMessage,
   CreditUsdcReturnIntentMessage,
+  WalletRelaySwapIntentMessage,
 } from "./evm/session-spend-7702"

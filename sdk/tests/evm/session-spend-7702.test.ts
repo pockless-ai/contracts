@@ -9,11 +9,13 @@ import {
   SESSION_SPEND_VERSION,
   SESSION_SPEND_V2_VERSION,
   SESSION_SPEND_V3_VERSION,
+  SESSION_SPEND_V4_VERSION,
   ZEROX_NATIVE_TOKEN,
   encodeCreditUsdcReturn,
   encodeExecuteRelayDeposit,
   encodeExecuteSwap,
   encodeExecuteSwapWithFeesV2,
+  encodeExecuteWalletRelaySwap,
   hashRelayCalldata,
   creditUsdcReturnIntentDomain,
   creditUsdcReturnIntentTypes,
@@ -23,10 +25,13 @@ import {
   swapBundleIntentV2Domain,
   swapBundleIntentV2Types,
   swapIntentDomain,
+  walletRelaySwapIntentDomain,
+  walletRelaySwapIntentTypes,
   type CreditUsdcReturnIntentMessage,
   type RelayDepositIntentMessage,
   type SwapBundleIntentV2Message,
   type SwapIntentMessage,
+  type WalletRelaySwapIntentMessage,
 } from "../../src/evm/session-spend-7702"
 
 const strategyId = `0x${"11".repeat(32)}` as const
@@ -251,4 +256,81 @@ test("V3 relay deposit and credit return use domain version 3", () => {
   })
   assert.equal(creditDecoded.functionName, "creditUsdcReturn")
   assert.deepEqual(creditDecoded.args?.[0], creditIntent)
+})
+
+test("V4 wallet relay swap uses domain version 4", () => {
+  assert.equal(SESSION_SPEND_V4_VERSION, "4")
+  assert.equal(
+    walletRelaySwapIntentDomain({ chainId: 1, verifyingContract: wallet }).version,
+    "4"
+  )
+})
+
+test("encodeExecuteWalletRelaySwap encodes executeWalletRelaySwap", () => {
+  const relayTarget = `0x${"88".repeat(20)}` as const
+  const relayCalldata = "0x1234" as const
+  const relayValue = 0n
+  const relayHash = hashRelayCalldata({
+    relayTarget,
+    relayValue,
+    relayCalldata,
+  })
+  const intent: WalletRelaySwapIntentMessage = {
+    nonce: 0n,
+    deadline: 2_000_000_000n,
+    sellToken: usdc,
+    sellAmount: 100_000_000n,
+    destRecipient: recipient,
+    relayCalldataHash: relayHash,
+    relayRequestId: `0x${"99".repeat(32)}`,
+    platformFeeUsdc: 500_000n,
+    feeRecipient: recipient,
+  }
+
+  assert.equal(
+    hashTypedData({
+      domain: walletRelaySwapIntentDomain({
+        chainId: 1,
+        verifyingContract: wallet,
+      }),
+      types: walletRelaySwapIntentTypes(),
+      primaryType: "WalletRelaySwapIntent",
+      message: intent,
+    }).length,
+    66
+  )
+
+  const encoded = encodeExecuteWalletRelaySwap({
+    intent,
+    relayTarget,
+    relayCalldata,
+    relayValue,
+    ownerSignature: signature,
+  })
+  const decoded = decodeFunctionData({
+    abi: sessionSpend7702Abi,
+    data: encoded,
+  })
+  assert.equal(decoded.functionName, "executeWalletRelaySwap")
+  assert.deepEqual(decoded.args?.[0], intent)
+  assert.equal(decoded.args?.[1], relayTarget)
+  assert.equal(decoded.args?.[2], relayCalldata)
+  assert.equal(decoded.args?.[3], relayValue)
+  assert.equal(decoded.args?.[4], signature)
+})
+
+test("hashRelayCalldata hashes relay target, value, and calldata", () => {
+  const relayTarget = `0x${"aa".repeat(20)}` as const
+  const relayCalldata = "0xdeadbeef" as const
+  const relayValue = 42n
+  const hash = hashRelayCalldata({ relayTarget, relayValue, relayCalldata })
+  assert.equal(hash.length, 66)
+  assert.notEqual(
+    hash,
+    hashRelayCalldata({
+      relayTarget,
+      relayValue,
+      relayCalldata: "0xbeef",
+    })
+  )
 })

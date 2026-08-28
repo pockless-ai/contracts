@@ -12,6 +12,7 @@ export const SESSION_SPEND_NAME = "PocklessSessionSpend7702"
 export const SESSION_SPEND_VERSION = "1"
 export const SESSION_SPEND_V2_VERSION = "2"
 export const SESSION_SPEND_V3_VERSION = "3"
+export const SESSION_SPEND_V4_VERSION = "4"
 export const EVM_NATIVE_TOKEN = "0x0000000000000000000000000000000000000000"
 export const ZEROX_NATIVE_TOKEN = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
@@ -212,6 +213,40 @@ export const sessionSpend7702Abi = [
   },
   {
     type: "function",
+    name: "walletRelayNonce",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "executeWalletRelaySwap",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "intent",
+        type: "tuple",
+        components: [
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" },
+          { name: "sellToken", type: "address" },
+          { name: "sellAmount", type: "uint256" },
+          { name: "destRecipient", type: "address" },
+          { name: "relayCalldataHash", type: "bytes32" },
+          { name: "relayRequestId", type: "bytes32" },
+          { name: "platformFeeUsdc", type: "uint256" },
+          { name: "feeRecipient", type: "address" },
+        ],
+      },
+      { name: "relayTarget", type: "address" },
+      { name: "relayCalldata", type: "bytes" },
+      { name: "relayValue", type: "uint256" },
+      { name: "ownerSignature", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
     name: "creditUsdcReturn",
     stateMutability: "nonpayable",
     inputs: [
@@ -351,6 +386,18 @@ export type CreditUsdcReturnIntentMessage = {
   deadline: bigint
   usdcReceived: bigint
   costReleasedUsdc: bigint
+  platformFeeUsdc: bigint
+  feeRecipient: Address
+}
+
+export type WalletRelaySwapIntentMessage = {
+  nonce: bigint
+  deadline: bigint
+  sellToken: Address
+  sellAmount: bigint
+  destRecipient: Address
+  relayCalldataHash: Hex
+  relayRequestId: Hex
   platformFeeUsdc: bigint
   feeRecipient: Address
 }
@@ -500,6 +547,34 @@ export function creditUsdcReturnIntentDomain(input: {
   verifyingContract: Address
 }) {
   return relayDepositIntentDomain(input)
+}
+
+export function walletRelaySwapIntentTypes() {
+  return {
+    WalletRelaySwapIntent: [
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "sellToken", type: "address" },
+      { name: "sellAmount", type: "uint256" },
+      { name: "destRecipient", type: "address" },
+      { name: "relayCalldataHash", type: "bytes32" },
+      { name: "relayRequestId", type: "bytes32" },
+      { name: "platformFeeUsdc", type: "uint256" },
+      { name: "feeRecipient", type: "address" },
+    ],
+  } as const
+}
+
+export function walletRelaySwapIntentDomain(input: {
+  chainId: number
+  verifyingContract: Address
+}) {
+  return {
+    name: SESSION_SPEND_NAME,
+    version: SESSION_SPEND_V4_VERSION,
+    chainId: input.chainId,
+    verifyingContract: input.verifyingContract,
+  }
 }
 
 export function hashRelayCalldata(input: {
@@ -722,5 +797,25 @@ export function encodeCreditUsdcReturn(input: {
     abi: sessionSpend7702Abi,
     functionName: "creditUsdcReturn",
     args: [input.intent, input.sessionSignature],
+  })
+}
+
+export function encodeExecuteWalletRelaySwap(input: {
+  intent: WalletRelaySwapIntentMessage
+  relayTarget: Address
+  relayCalldata: Hex
+  relayValue: bigint
+  ownerSignature: Hex
+}) {
+  return encodeFunctionData({
+    abi: sessionSpend7702Abi,
+    functionName: "executeWalletRelaySwap",
+    args: [
+      input.intent,
+      input.relayTarget,
+      input.relayCalldata,
+      input.relayValue,
+      input.ownerSignature,
+    ],
   })
 }
