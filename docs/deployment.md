@@ -184,6 +184,13 @@ command requires it at the same path, so it must not exist only on one workstati
 
 ### Upgrades
 
+After editing Solidity or Rust, format before preflight — deploy and upgrade run
+`forge fmt --check` and `cargo fmt --check`:
+
+```bash
+yarn fmt
+```
+
 Commit and push the new release, then preflight and execute it explicitly:
 
 ```bash

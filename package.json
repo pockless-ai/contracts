@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "setup": "bash deploy/scripts/setup-tools.sh",
+    "fmt": "forge fmt --root evm && cargo fmt --all --manifest-path solana/Cargo.toml",
     "deploy": "yarn workspace @pockless/deploy-cli deploy",
     "upgrade": "yarn workspace @pockless/deploy-cli upgrade",
     "immutable": "yarn workspace @pockless/deploy-cli immutable",

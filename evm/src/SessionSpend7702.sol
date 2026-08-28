@@ -526,9 +526,7 @@ contract SessionSpend7702 {
         address destRecipient,
         bytes32 relayRequestId
     );
-    event WalletPlatformFeeCharged(
-        address indexed feeRecipient, uint256 platformFeeUsdc
-    );
+    event WalletPlatformFeeCharged(address indexed feeRecipient, uint256 platformFeeUsdc);
 
     modifier onlyOwner() {
         if (msg.sender != address(this)) revert NotOwner();
@@ -671,8 +669,7 @@ contract SessionSpend7702 {
         if (isUsdcOrigin) {
             uint256 overheadUsdc = _normalizeUsdc(intent.platformFeeUsdc);
             uint256 deployCost = _normalizeUsdc(intent.originAmount);
-            uint256 deployable =
-                uint256(session.capacityUsdc) - uint256(session.deployedUsdc);
+            uint256 deployable = uint256(session.capacityUsdc) - uint256(session.deployedUsdc);
             if (deployCost + overheadUsdc > deployable) revert SpendLimitExceeded();
             _deductOverhead(session, overheadUsdc);
             _chargeRelayPlatformFee(intent);
@@ -690,7 +687,9 @@ contract SessionSpend7702 {
             sellAsset.costUsdc = uint128(uint256(sellAsset.costUsdc) - costPortion);
         }
 
-        _executeRelayCall(intent.originToken, intent.originAmount, relayTarget, relayCalldata, relayValue);
+        _executeRelayCall(
+            intent.originToken, intent.originAmount, relayTarget, relayCalldata, relayValue
+        );
 
         session.nonce += 1;
         emit RelayDepositExecuted(
@@ -724,9 +723,8 @@ contract SessionSpend7702 {
         if (relayCallHash != intent.relayCalldataHash) revert InvalidIntent();
         _validateRelayTarget(relayTarget);
 
-        bytes32 digest = WalletRelaySwapIntentHash.digest(
-            _walletRelaySwapPayload(intent), _domainSeparatorV4()
-        );
+        bytes32 digest =
+            WalletRelaySwapIntentHash.digest(_walletRelaySwapPayload(intent), _domainSeparatorV4());
         if (_recover(digest, ownerSignature) != address(this)) revert InvalidSignature();
 
         if (intent.sellToken == address(0)) {
@@ -755,16 +753,18 @@ contract SessionSpend7702 {
         );
     }
 
-    function creditUsdcReturn(CreditUsdcReturnIntent calldata intent, bytes calldata sessionSignature)
-        external
-        nonReentrant
-    {
+    function creditUsdcReturn(
+        CreditUsdcReturnIntent calldata intent,
+        bytes calldata sessionSignature
+    ) external nonReentrant {
         _validateSignedSwap(
             intent.strategyId,
             intent.sessionKey,
             intent.nonce,
             intent.deadline,
-            CreditUsdcReturnIntentHash.digest(_creditUsdcReturnPayload(intent), _domainSeparatorV3()),
+            CreditUsdcReturnIntentHash.digest(
+                _creditUsdcReturnPayload(intent), _domainSeparatorV3()
+            ),
             sessionSignature
         );
 
@@ -785,10 +785,7 @@ contract SessionSpend7702 {
                 revert CallFailed("");
             }
             emit PlatformFeeCharged(
-                intent.strategyId,
-                intent.sessionKey,
-                intent.feeRecipient,
-                intent.platformFeeUsdc
+                intent.strategyId, intent.sessionKey, intent.feeRecipient, intent.platformFeeUsdc
             );
         }
 
