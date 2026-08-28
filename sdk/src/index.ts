@@ -12,6 +12,7 @@ export {
   SESSION_SPEND_NAME,
   SESSION_SPEND_VERSION,
   SESSION_SPEND_V2_VERSION,
+  SESSION_SPEND_V3_VERSION,
   EVM_NATIVE_TOKEN,
   ZEROX_NATIVE_TOKEN,
   GasFundingMode,
@@ -25,12 +26,19 @@ export {
   encodeExecuteSwap,
   encodeExecuteSwapWithFees,
   encodeExecuteSwapWithFeesV2,
+  encodeExecuteRelayDeposit,
+  encodeCreditUsdcReturn,
   strategyIdFromCuid,
   revokeIntentTypes,
   swapBundleIntentTypes,
   swapBundleIntentDomain,
   swapBundleIntentV2Types,
   swapBundleIntentV2Domain,
+  relayDepositIntentTypes,
+  creditUsdcReturnIntentTypes,
+  relayDepositIntentDomain,
+  creditUsdcReturnIntentDomain,
+  hashRelayCalldata,
 } from "./evm/session-spend-7702"
 
 export {
@@ -52,6 +60,8 @@ export {
   encodeExecuteSwap as encodeSolanaExecuteSwap,
   encodeExecuteSwapWithFees as encodeSolanaExecuteSwapWithFees,
   encodeExecuteSwapWithFeesV2 as encodeSolanaExecuteSwapWithFeesV2,
+  encodeExecuteRelayDeposit as encodeSolanaExecuteRelayDeposit,
+  encodeCreditUsdcReturn as encodeSolanaCreditUsdcReturn,
   encodeWithdrawAsset,
   encodeCloseStrategy,
   solanaStrategyIdFromCuid,
@@ -64,4 +74,6 @@ export type {
   SwapIntentMessage,
   SwapBundleIntentMessage,
   SwapBundleIntentV2Message,
+  RelayDepositIntentMessage,
+  CreditUsdcReturnIntentMessage,
 } from "./evm/session-spend-7702"

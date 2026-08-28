@@ -8,13 +8,23 @@ import {
   GasFundingMode,
   SESSION_SPEND_VERSION,
   SESSION_SPEND_V2_VERSION,
+  SESSION_SPEND_V3_VERSION,
   ZEROX_NATIVE_TOKEN,
+  encodeCreditUsdcReturn,
+  encodeExecuteRelayDeposit,
   encodeExecuteSwap,
   encodeExecuteSwapWithFeesV2,
+  hashRelayCalldata,
+  creditUsdcReturnIntentDomain,
+  creditUsdcReturnIntentTypes,
+  relayDepositIntentDomain,
+  relayDepositIntentTypes,
   sessionSpend7702Abi,
   swapBundleIntentV2Domain,
   swapBundleIntentV2Types,
   swapIntentDomain,
+  type CreditUsdcReturnIntentMessage,
+  type RelayDepositIntentMessage,
   type SwapBundleIntentV2Message,
   type SwapIntentMessage,
 } from "../../src/evm/session-spend-7702"
@@ -150,4 +160,95 @@ test("V2 typed data and ABI pin every gas funding mode", () => {
     assert.deepEqual(decoded.args?.[0], intent)
   }
   assert.equal(hashes.size, 3)
+})
+
+test("V3 relay deposit and credit return use domain version 3", () => {
+  const relayTarget = `0x${"88".repeat(20)}` as const
+  const relayCalldata = "0x1234" as const
+  const relayValue = 0n
+  const relayHash = hashRelayCalldata({
+    relayTarget,
+    relayValue,
+    relayCalldata,
+  })
+  const relayIntent: RelayDepositIntentMessage = {
+    strategyId,
+    sessionKey,
+    nonce: 0n,
+    deadline: 2_000_000_000n,
+    originToken: usdc,
+    originAmount: 100_000_000n,
+    destChainId: 42161n,
+    destToken: token,
+    minDestAmount: 1n,
+    destRecipient: recipient,
+    relayCalldataHash: relayHash,
+    platformFeeUsdc: 500_000n,
+    feeRecipient: recipient,
+  }
+  const creditIntent: CreditUsdcReturnIntentMessage = {
+    strategyId,
+    sessionKey,
+    nonce: 1n,
+    deadline: 2_000_000_000n,
+    usdcReceived: 95_000_000n,
+    costReleasedUsdc: 100_000_000n,
+    platformFeeUsdc: 500_000n,
+    feeRecipient: recipient,
+  }
+
+  assert.equal(SESSION_SPEND_V3_VERSION, "3")
+  assert.equal(
+    relayDepositIntentDomain({ chainId: 1, verifyingContract: wallet }).version,
+    "3"
+  )
+  assert.equal(
+    hashTypedData({
+      domain: relayDepositIntentDomain({
+        chainId: 1,
+        verifyingContract: wallet,
+      }),
+      types: relayDepositIntentTypes(),
+      primaryType: "RelayDepositIntent",
+      message: relayIntent,
+    }).length,
+    66
+  )
+  assert.equal(
+    hashTypedData({
+      domain: creditUsdcReturnIntentDomain({
+        chainId: 1,
+        verifyingContract: wallet,
+      }),
+      types: creditUsdcReturnIntentTypes(),
+      primaryType: "CreditUsdcReturnIntent",
+      message: creditIntent,
+    }).length,
+    66
+  )
+
+  const relayEncoded = encodeExecuteRelayDeposit({
+    intent: relayIntent,
+    relayTarget,
+    relayCalldata,
+    relayValue,
+    sessionSignature: signature,
+  })
+  const relayDecoded = decodeFunctionData({
+    abi: sessionSpend7702Abi,
+    data: relayEncoded,
+  })
+  assert.equal(relayDecoded.functionName, "executeRelayDeposit")
+  assert.deepEqual(relayDecoded.args?.[0], relayIntent)
+
+  const creditEncoded = encodeCreditUsdcReturn({
+    intent: creditIntent,
+    sessionSignature: signature,
+  })
+  const creditDecoded = decodeFunctionData({
+    abi: sessionSpend7702Abi,
+    data: creditEncoded,
+  })
+  assert.equal(creditDecoded.functionName, "creditUsdcReturn")
+  assert.deepEqual(creditDecoded.args?.[0], creditIntent)
 })

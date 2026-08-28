@@ -19,6 +19,8 @@ const VARIANT = {
   WithdrawAsset: 7,
   CloseStrategy: 8,
   ExecuteSwapWithFeesV2: 9,
+  ExecuteRelayDeposit: 10,
+  CreditUsdcReturn: 11,
 } as const
 
 export type SolanaGasMode =
@@ -316,6 +318,59 @@ export function encodeWithdrawAsset(amount: bigint) {
 
 export function encodeCloseStrategy() {
   return Buffer.from([VARIANT.CloseStrategy])
+}
+
+export function encodeExecuteRelayDeposit(input: {
+  originAmount: bigint
+  destChainId: bigint
+  minDestAmount: bigint
+  platformFeeUsdc: bigint
+  relayTarget: Buffer
+  relayData: Buffer
+  relayValue: bigint
+}) {
+  const data = Buffer.alloc(
+    1 +
+      8 +
+      8 +
+      8 +
+      8 +
+      32 +
+      4 +
+      input.relayData.length +
+      8
+  )
+  let offset = 0
+  data[offset++] = VARIANT.ExecuteRelayDeposit
+  data.writeBigUInt64LE(input.originAmount, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.destChainId, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.minDestAmount, offset)
+  offset += 8
+  data.writeBigUInt64LE(input.platformFeeUsdc, offset)
+  offset += 8
+  data.set(input.relayTarget, offset)
+  offset += 32
+  data.writeUInt32LE(input.relayData.length, offset)
+  offset += 4
+  input.relayData.copy(data, offset)
+  offset += input.relayData.length
+  data.writeBigUInt64LE(input.relayValue, offset)
+  return data
+}
+
+export function encodeCreditUsdcReturn(input: {
+  usdcReceived: bigint
+  costReleasedUsdc: bigint
+  platformFeeUsdc: bigint
+}) {
+  const data = Buffer.alloc(1 + 8 + 8 + 8)
+  data[0] = VARIANT.CreditUsdcReturn
+  data.writeBigUInt64LE(input.usdcReceived, 1)
+  data.writeBigUInt64LE(input.costReleasedUsdc, 9)
+  data.writeBigUInt64LE(input.platformFeeUsdc, 17)
+  return data
 }
 
 export type { Hex }

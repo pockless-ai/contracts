@@ -1,4 +1,5 @@
 import {
+  encodeAbiParameters,
   encodeFunctionData,
   keccak256,
   parseUnits,
@@ -10,6 +11,7 @@ import {
 export const SESSION_SPEND_NAME = "PocklessSessionSpend7702"
 export const SESSION_SPEND_VERSION = "1"
 export const SESSION_SPEND_V2_VERSION = "2"
+export const SESSION_SPEND_V3_VERSION = "3"
 export const EVM_NATIVE_TOKEN = "0x0000000000000000000000000000000000000000"
 export const ZEROX_NATIVE_TOKEN = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
@@ -178,6 +180,60 @@ export const sessionSpend7702Abi = [
     outputs: [],
   },
   {
+    type: "function",
+    name: "executeRelayDeposit",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "intent",
+        type: "tuple",
+        components: [
+          { name: "strategyId", type: "bytes32" },
+          { name: "sessionKey", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" },
+          { name: "originToken", type: "address" },
+          { name: "originAmount", type: "uint256" },
+          { name: "destChainId", type: "uint256" },
+          { name: "destToken", type: "address" },
+          { name: "minDestAmount", type: "uint256" },
+          { name: "destRecipient", type: "address" },
+          { name: "relayCalldataHash", type: "bytes32" },
+          { name: "platformFeeUsdc", type: "uint256" },
+          { name: "feeRecipient", type: "address" },
+        ],
+      },
+      { name: "relayTarget", type: "address" },
+      { name: "relayCalldata", type: "bytes" },
+      { name: "relayValue", type: "uint256" },
+      { name: "sessionSignature", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "creditUsdcReturn",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "intent",
+        type: "tuple",
+        components: [
+          { name: "strategyId", type: "bytes32" },
+          { name: "sessionKey", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" },
+          { name: "usdcReceived", type: "uint256" },
+          { name: "costReleasedUsdc", type: "uint256" },
+          { name: "platformFeeUsdc", type: "uint256" },
+          { name: "feeRecipient", type: "address" },
+        ],
+      },
+      { name: "sessionSignature", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
     type: "event",
     name: "GasCreditFunded",
     inputs: [
@@ -187,6 +243,33 @@ export const sessionSpend7702Abi = [
       { name: "fundingMode", type: "uint8", indexed: false },
       { name: "gasTopUpUsdc", type: "uint256", indexed: false },
       { name: "nativeAmount", type: "uint256", indexed: false },
+    ],
+    anonymous: false,
+  },
+  {
+    type: "event",
+    name: "RelayDepositExecuted",
+    inputs: [
+      { name: "strategyId", type: "bytes32", indexed: true },
+      { name: "sessionKey", type: "address", indexed: true },
+      { name: "originToken", type: "address", indexed: false },
+      { name: "originAmount", type: "uint256", indexed: false },
+      { name: "destChainId", type: "uint256", indexed: false },
+      { name: "destToken", type: "address", indexed: false },
+      { name: "minDestAmount", type: "uint256", indexed: false },
+      { name: "destRecipient", type: "address", indexed: false },
+    ],
+    anonymous: false,
+  },
+  {
+    type: "event",
+    name: "UsdcReturnCredited",
+    inputs: [
+      { name: "strategyId", type: "bytes32", indexed: true },
+      { name: "sessionKey", type: "address", indexed: true },
+      { name: "usdcReceived", type: "uint256", indexed: false },
+      { name: "costReleasedUsdc", type: "uint256", indexed: false },
+      { name: "realizedPnlUsdc", type: "int256", indexed: false },
     ],
     anonymous: false,
   },
@@ -243,6 +326,33 @@ export type SwapBundleIntentV2Message = {
   gasTopUpNative: bigint
   gasRecipient: Address
   gasRouterCalldataHash: Hex
+}
+
+export type RelayDepositIntentMessage = {
+  strategyId: Hex
+  sessionKey: Address
+  nonce: bigint
+  deadline: bigint
+  originToken: Address
+  originAmount: bigint
+  destChainId: bigint
+  destToken: Address
+  minDestAmount: bigint
+  destRecipient: Address
+  relayCalldataHash: Hex
+  platformFeeUsdc: bigint
+  feeRecipient: Address
+}
+
+export type CreditUsdcReturnIntentMessage = {
+  strategyId: Hex
+  sessionKey: Address
+  nonce: bigint
+  deadline: bigint
+  usdcReceived: bigint
+  costReleasedUsdc: bigint
+  platformFeeUsdc: bigint
+  feeRecipient: Address
 }
 
 export type RevokeIntentMessage = {
@@ -336,6 +446,77 @@ export function swapBundleIntentV2Domain(input: {
     chainId: input.chainId,
     verifyingContract: input.verifyingContract,
   }
+}
+
+export function relayDepositIntentTypes() {
+  return {
+    RelayDepositIntent: [
+      { name: "strategyId", type: "bytes32" },
+      { name: "sessionKey", type: "address" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "originToken", type: "address" },
+      { name: "originAmount", type: "uint256" },
+      { name: "destChainId", type: "uint256" },
+      { name: "destToken", type: "address" },
+      { name: "minDestAmount", type: "uint256" },
+      { name: "destRecipient", type: "address" },
+      { name: "relayCalldataHash", type: "bytes32" },
+      { name: "platformFeeUsdc", type: "uint256" },
+      { name: "feeRecipient", type: "address" },
+    ],
+  } as const
+}
+
+export function creditUsdcReturnIntentTypes() {
+  return {
+    CreditUsdcReturnIntent: [
+      { name: "strategyId", type: "bytes32" },
+      { name: "sessionKey", type: "address" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "usdcReceived", type: "uint256" },
+      { name: "costReleasedUsdc", type: "uint256" },
+      { name: "platformFeeUsdc", type: "uint256" },
+      { name: "feeRecipient", type: "address" },
+    ],
+  } as const
+}
+
+export function relayDepositIntentDomain(input: {
+  chainId: number
+  verifyingContract: Address
+}) {
+  return {
+    name: SESSION_SPEND_NAME,
+    version: SESSION_SPEND_V3_VERSION,
+    chainId: input.chainId,
+    verifyingContract: input.verifyingContract,
+  }
+}
+
+export function creditUsdcReturnIntentDomain(input: {
+  chainId: number
+  verifyingContract: Address
+}) {
+  return relayDepositIntentDomain(input)
+}
+
+export function hashRelayCalldata(input: {
+  relayTarget: Address
+  relayValue: bigint
+  relayCalldata: Hex
+}) {
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { type: "address" },
+        { type: "uint256" },
+        { type: "bytes" },
+      ],
+      [input.relayTarget, input.relayValue, input.relayCalldata]
+    )
+  )
 }
 
 export function revokeIntentTypes() {
@@ -510,5 +691,36 @@ export function encodeExecuteSwapWithFeesV2(input: {
       input.gasRouterCalldata,
       input.sessionSignature,
     ],
+  })
+}
+
+export function encodeExecuteRelayDeposit(input: {
+  intent: RelayDepositIntentMessage
+  relayTarget: Address
+  relayCalldata: Hex
+  relayValue: bigint
+  sessionSignature: Hex
+}) {
+  return encodeFunctionData({
+    abi: sessionSpend7702Abi,
+    functionName: "executeRelayDeposit",
+    args: [
+      input.intent,
+      input.relayTarget,
+      input.relayCalldata,
+      input.relayValue,
+      input.sessionSignature,
+    ],
+  })
+}
+
+export function encodeCreditUsdcReturn(input: {
+  intent: CreditUsdcReturnIntentMessage
+  sessionSignature: Hex
+}) {
+  return encodeFunctionData({
+    abi: sessionSpend7702Abi,
+    functionName: "creditUsdcReturn",
+    args: [input.intent, input.sessionSignature],
   })
 }
