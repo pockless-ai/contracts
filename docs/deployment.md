@@ -184,19 +184,22 @@ command requires it at the same path, so it must not exist only on one workstati
 
 ### Upgrades
 
-After editing Solidity or Rust, format before preflight — deploy and upgrade run
-`forge fmt --check` and `cargo fmt --check`:
-
-```bash
-yarn fmt
-```
-
 Commit and push the new release, then preflight and execute it explicitly:
 
 ```bash
+yarn fmt
 yarn upgrade --environment testnet --dry-run
 yarn upgrade --environment testnet
 ```
+
+If you deployed or upgraded from another machine, copy `deploy/.deploy/<environment>.json`
+when you have it. Otherwise the CLI bootstraps missing or stale manifest targets from
+[`deployments.json`](./deployments.json) before preflight, using recorded addresses and
+code/program hashes. A pending, running, or failed target belonging to the current commit is
+never replaced: it remains authoritative resume state. Existing target state is replaced only
+when Git confirms that its `deployments.json` release commit is the same as or ahead of the
+manifest release. Re-broadcast still happens only when the current build artifact differs from
+the bootstrapped release hash.
 
 `upgrade` skips unchanged artifacts. Changed EVM bytecode deploys to a new implementation
 address, so applications must update their implementation configuration and wallet owners

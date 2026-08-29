@@ -36,6 +36,14 @@ import {
   type SolanaTarget,
 } from "./config"
 import { mergeDeployments } from "./deployments"
+import {
+  bootstrapManifestFromDeployments,
+  deploymentEntryForTarget,
+  deploymentReleaseCommit,
+  loadCurrentArtifacts,
+  loadDeploymentsRecord,
+  type CommitRelation,
+} from "./deployments-bootstrap"
 import { resolveSolanaKeypairs } from "./env"
 import {
   assertResumeCompatible,
@@ -388,6 +396,28 @@ async function releaseInfo(run: RunCommand, environment: Environment) {
   return commit
 }
 
+async function commitRelation(
+  run: RunCommand,
+  manifestCommit: string,
+  deploymentCommit: string
+): Promise<CommitRelation> {
+  if (manifestCommit === deploymentCommit) return "same"
+
+  const deploymentIsAhead = await run(
+    "git",
+    ["merge-base", "--is-ancestor", manifestCommit, deploymentCommit],
+    { cwd: contractsRoot }
+  )
+  if (deploymentIsAhead.code === 0) return "ahead"
+
+  const deploymentIsBehind = await run(
+    "git",
+    ["merge-base", "--is-ancestor", deploymentCommit, manifestCommit],
+    { cwd: contractsRoot }
+  )
+  return deploymentIsBehind.code === 0 ? "behind" : "unknown"
+}
+
 async function requireTools(run: RunCommand) {
   const tools = [
     "git",
@@ -543,11 +573,9 @@ function shouldBroadcastUpgrade(
   artifactHash: string
 ) {
   if (!existing) return true
-  if (
-    options.operation === "upgrade" &&
-    existing.artifactHash !== artifactHash
-  ) {
-    return true
+  if (options.operation === "upgrade") {
+    if (!existing.artifactHash) return true
+    return existing.artifactHash !== artifactHash
   }
   return options.forceBroadcast && existing.status !== "complete"
 }
@@ -1190,11 +1218,6 @@ export async function runDeploy(
   if (options.fundingCheck) {
     manifest ??= newManifest(options.environment, commit)
   } else if (!manifest) {
-    if (options.operation === "upgrade") {
-      throw new Error(
-        `cannot upgrade before ${options.environment} has a deployment manifest`
-      )
-    }
     manifest = newManifest(options.environment, commit)
   } else if (
     options.operation === "upgrade" &&
@@ -1206,6 +1229,48 @@ export async function runDeploy(
     advancingRelease = true
   } else {
     assertResumeCompatible(manifest, options.environment, commit)
+  }
+
+  if (!options.fundingCheck && !dependencies.preflight) {
+    const deployments = await loadDeploymentsRecord(deploymentsPath)
+    const currentArtifacts = await loadCurrentArtifacts(targets, {
+      evmArtifactPath: join(
+        evmRoot,
+        "out/SessionSpend7702.sol/SessionSpend7702.json"
+      ),
+      solanaArtifactPath: solanaArtifact,
+    })
+    const deploymentRelations = new Map<string, CommitRelation>()
+    for (const target of targets) {
+      const entry = deploymentEntryForTarget(
+        deployments,
+        target,
+        options.environment
+      )
+      const deploymentCommit = entry && deploymentReleaseCommit(entry)
+      if (!deploymentCommit) continue
+      deploymentRelations.set(
+        target.key,
+        await commitRelation(
+          dependencies.run,
+          manifest.releaseCommit,
+          deploymentCommit
+        )
+      )
+    }
+    const bootstrapped = bootstrapManifestFromDeployments({
+      manifest,
+      deployments,
+      targets,
+      environment: options.environment,
+      currentCommit: commit,
+      currentArtifacts,
+      deploymentRelations,
+      log: dependencies.log,
+    })
+    if (bootstrapped) {
+      await saveManifest(path, manifest)
+    }
   }
 
   if (
@@ -1362,7 +1427,7 @@ export async function runDeploy(
           }
         }
         dependencies.log(
-          artifactChanged && options.operation === "upgrade"
+          shouldBroadcastUpgrade(options, existing, preflight.artifactHash)
             ? `${target.name}: completed deployment validated; upgrade required`
             : `${target.name}: completed deployment validated; skipping`
         )
