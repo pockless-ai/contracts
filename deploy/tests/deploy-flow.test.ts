@@ -249,9 +249,11 @@ test("deployment merge preserves environments and adds release metadata", async 
       family: "evm",
       name: "base-sepolia",
       status: "complete",
+      artifactHash: "evm-artifact-hash",
       address: testUsdc,
       txHash: `0x${"1".repeat(64)}`,
       codeHash: `0x${"2".repeat(64)}`,
+      verificationStatus: "verified",
     }
     await mergeDeployments(
       path,
@@ -263,6 +265,8 @@ test("deployment merge preserves environments and adds release metadata", async 
     assert.equal(merged.evm["84532"].tier, "testnet")
     assert.equal(merged.evm["84532"].releaseCommit, "abc")
     assert.equal(merged.evm["84532"].status, "deployed")
+    assert.equal(merged.evm["84532"].artifactHash, "evm-artifact-hash")
+    assert.equal(merged.evm["84532"].verificationStatus, "verified")
 
     const upgraded = newManifest("testnet", "def")
     upgraded.targets["84532"] = {

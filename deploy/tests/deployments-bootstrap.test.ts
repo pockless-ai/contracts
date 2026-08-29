@@ -215,10 +215,55 @@ test("targetStateFromDeployment keeps artifact hash when release and artifact ar
       programHash: "same-hash",
       releaseCommit: "same-commit",
     },
-    { artifactHash: "artifact-hash", releaseHash: "same-hash" },
-    "same-commit"
+    { artifactHash: "artifact-hash", releaseHash: "same-hash" }
   )
   assert.equal(state.artifactHash, "artifact-hash")
+})
+
+test("targetStateFromDeployment restores EVM artifact identity from deployments", () => {
+  const targets = loadTargets("testnet", {
+    BASE_SEPOLIA_USDC_ADDRESS: testUsdc,
+  })
+  const state = targetStateFromDeployment(
+    targets[0]!,
+    {
+      tier: "testnet",
+      status: "deployed",
+      implementation: testUsdc,
+      codeHash: `0x${"1".repeat(64)}`,
+      artifactHash: "artifact-hash",
+      releaseCommit: "previous-commit",
+      verifiedAt: "2026-08-25T20:33:15.265Z",
+    },
+    {
+      artifactHash: "artifact-hash",
+      releaseHash: `0x${"2".repeat(64)}`,
+    }
+  )
+
+  assert.equal(state.artifactHash, "artifact-hash")
+  assert.equal(state.verificationStatus, "verified")
+})
+
+test("targetStateFromDeployment does not promote unverified deployments", () => {
+  const targets = loadTargets("testnet", {
+    BASE_SEPOLIA_USDC_ADDRESS: testUsdc,
+  })
+  const state = targetStateFromDeployment(
+    targets[1]!,
+    {
+      tier: "testnet",
+      status: "deployed",
+      programId: "Program111111111111111111111111111111111111111",
+      programHash: "same-hash",
+      artifactHash: "artifact-hash",
+      verificationStatus: "pending",
+    },
+    { artifactHash: "artifact-hash", releaseHash: "same-hash" }
+  )
+
+  assert.equal(state.verificationStatus, "pending")
+  assert.equal(state.verifiedAt, undefined)
 })
 
 test("targetStateFromDeployment normalizes legacy full-file Solana hashes", () => {
@@ -237,8 +282,7 @@ test("targetStateFromDeployment normalizes legacy full-file Solana hashes", () =
     {
       artifactHash: "legacy-full-file-hash",
       releaseHash: "canonical-executable-hash",
-    },
-    "current-commit"
+    }
   )
 
   assert.equal(state.programHash, "canonical-executable-hash")

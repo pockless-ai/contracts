@@ -58,6 +58,12 @@ function normalizedString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined
 }
 
+function normalizedVerificationStatus(value: unknown) {
+  return value === "verified" || value === "pending" || value === "failed"
+    ? value
+    : undefined
+}
+
 export function deploymentReleaseCommit(entry: Record<string, unknown>) {
   return normalizedString(entry.releaseCommit)
 }
@@ -126,12 +132,13 @@ export function shouldBootstrapTarget(
 export function targetStateFromDeployment(
   target: Target,
   entry: Record<string, unknown>,
-  current: CurrentArtifact,
-  currentCommit: string
+  current: CurrentArtifact
 ): TargetState {
   const verifiedAt = normalizedString(entry.verifiedAt)
-  const unchangedRelease =
-    normalizedString(entry.releaseCommit) === currentCommit
+  const verificationStatus =
+    normalizedVerificationStatus(entry.verificationStatus) ??
+    (verifiedAt ? "verified" : "pending")
+  const recordedArtifactHash = normalizedString(entry.artifactHash)
   const recordedProgramHash = normalizedString(entry.programHash)
   const canonicalProgramHash =
     target.family === "solana" &&
@@ -140,19 +147,17 @@ export function targetStateFromDeployment(
       : recordedProgramHash
   const unchangedArtifact =
     target.family === "evm"
-      ? normalizedHex(entry.codeHash) === current.releaseHash.toLowerCase()
-      : canonicalProgramHash === current.releaseHash
+      ? recordedArtifactHash === current.artifactHash
+      : recordedArtifactHash === current.artifactHash ||
+        canonicalProgramHash === current.releaseHash
 
   const base: TargetState = {
     family: target.family,
     name: target.name,
     status: "complete",
-    verificationStatus: "verified",
+    verificationStatus,
     verifiedAt,
-    ...((target.family === "evm" ? unchangedRelease : true) &&
-    unchangedArtifact
-      ? { artifactHash: current.artifactHash }
-      : {}),
+    ...(unchangedArtifact ? { artifactHash: current.artifactHash } : {}),
   }
 
   if (target.family === "evm") {
@@ -224,8 +229,7 @@ export function bootstrapManifestFromDeployments(input: {
     input.manifest.targets[target.key] = targetStateFromDeployment(
       target,
       entry,
-      current,
-      input.currentCommit
+      current
     )
     input.log(
       `${target.name}: bootstrapped manifest from deployments.json${

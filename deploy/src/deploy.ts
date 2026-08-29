@@ -783,6 +783,7 @@ async function preflightSolana(
     programKeypair,
     programId,
     artifactHash: await sha256(solanaArtifact),
+    programHash: solanaExecutableHash(await readFile(solanaArtifact)),
     funding,
   }
 }
@@ -1045,6 +1046,11 @@ async function deploySolana(
     programId,
     preflight.feePayer
   )
+  if (!shouldBroadcast && programHash !== preflight.programHash) {
+    throw new Error(
+      `${target.name} on-chain program does not match the current release`
+    )
+  }
   const repository = options.source.SOLANA_VERIFY_REPOSITORY_URL?.trim()
   let verificationStatus: "verified" | "pending" = "verified"
   let verifiedAt: string | undefined
