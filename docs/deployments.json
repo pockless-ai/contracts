@@ -95,7 +95,7 @@
       "txHash": "0x0aefdc48fb85688227ed581761e76f778ad73aae5a6452edfcbe694ae24ba400",
       "codeHash": "0xafca4a6703084970f6548347d22717d119f598edd8adfc905da321dac024567a",
       "verifiedAt": "2026-08-29T00:38:54.160Z",
-      "releaseCommit": "a34b9ed199cbe31a3af3349013834eb954925341",
+      "releaseCommit": "a9eed7c6b8fbb363f482063387220e34f6752195",
       "releases": [
         {
           "implementation": "0x92237a6819A07d9373303Ff5bb2835b9916994C4",
@@ -137,7 +137,9 @@
           "releaseCommit": "9612fafcc47638b373644fce871742673db1b6df",
           "supersededAt": "2026-08-29T00:38:54.160Z"
         }
-      ]
+      ],
+      "artifactHash": "6d59e753364925d0416455bc9f3b0329c9b40b0b90ae7cc352de56f1d8a48d73",
+      "verificationStatus": "verified"
     }
   },
   "solana": {
@@ -162,7 +164,7 @@
       "status": "deployed",
       "programHash": "1d038bc47f68879cae02efefc9daa230723dea58cdf0a482908e77b9e5e3ae15",
       "verifiedAt": "2026-08-29T00:42:31.466Z",
-      "releaseCommit": "a34b9ed199cbe31a3af3349013834eb954925341",
+      "releaseCommit": "a9eed7c6b8fbb363f482063387220e34f6752195",
       "releases": [
         {
           "programId": "3yxrhjrQhqojzQ7CuzKKjiiNsTjRcoqXMJ7q694Xi5To",
@@ -192,7 +194,9 @@
           "releaseCommit": "9612fafcc47638b373644fce871742673db1b6df",
           "supersededAt": "2026-08-29T00:42:31.466Z"
         }
-      ]
+      ],
+      "artifactHash": "9ade19f4f4833f1a393f4174edebd8c174df59da24f8d9cfbde6131e7d4785f1",
+      "verificationStatus": "verified"
     }
   }
 }
