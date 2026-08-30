@@ -33,6 +33,22 @@ pub enum StrategySpendError {
     Overflow,
     #[error("Jupiter CPI failed")]
     JupiterCpiFailed,
+    #[error("Platform relayer mismatch")]
+    RelayerMismatch,
+    #[error("Relay intent nonce mismatch")]
+    NonceMismatch,
+    #[error("Relay order already consumed")]
+    RelayOrderConsumed,
+    #[error("Insufficient vault surplus for relay credit")]
+    InsufficientVaultSurplus,
+    #[error("Relay credit below minimum")]
+    RelayCreditBelowMinimum,
+    #[error("Remote inventory insufficient")]
+    InsufficientRemoteAsset,
+    #[error("Relay depository CPI validation failed")]
+    RelayCpiFailed,
+    #[error("Relay pending record missing")]
+    PendingRecordMissing,
 }
 
 impl From<StrategySpendError> for ProgramError {

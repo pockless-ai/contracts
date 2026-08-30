@@ -202,19 +202,6 @@ export function bootstrapManifestFromDeployments(input: {
 
     const existing = input.manifest.targets[target.key]
     if (
-      target.family === "solana" &&
-      existing?.family === "solana" &&
-      existing.programHash === current.artifactHash
-    ) {
-      existing.programHash = current.releaseHash
-      existing.artifactHash = current.artifactHash
-      input.log(
-        `${target.name}: normalized legacy Solana program hash in manifest`
-      )
-      changed = true
-    }
-
-    if (
       !shouldBootstrapTarget(
         existing,
         entry,

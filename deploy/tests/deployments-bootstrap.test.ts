@@ -289,7 +289,7 @@ test("targetStateFromDeployment normalizes legacy full-file Solana hashes", () =
   assert.equal(state.artifactHash, "legacy-full-file-hash")
 })
 
-test("bootstrap preserves current failed state while normalizing its legacy Solana hash", () => {
+test("bootstrap leaves failed Solana targets unchanged without stale bootstrap", () => {
   const targets = loadTargets("testnet", {
     BASE_SEPOLIA_USDC_ADDRESS: testUsdc,
   })
@@ -334,14 +334,8 @@ test("bootstrap preserves current failed state while normalizing its legacy Sola
     log: () => undefined,
   })
 
-  assert.equal(changed, true)
+  assert.equal(changed, false)
   assert.equal(manifest.targets.devnet?.status, "failed")
-  assert.equal(
-    manifest.targets.devnet?.programHash,
-    "canonical-executable-hash"
-  )
-  assert.equal(
-    manifest.targets.devnet?.artifactHash,
-    "legacy-full-file-hash"
-  )
+  assert.equal(manifest.targets.devnet?.programHash, "legacy-full-file-hash")
+  assert.equal(manifest.targets.devnet?.artifactHash, "legacy-full-file-hash")
 })

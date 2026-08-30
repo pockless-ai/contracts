@@ -21,8 +21,13 @@ use spl_token::{
 use crate::error::StrategySpendError;
 use crate::instruction::{GasMode, StrategySpendInstruction};
 use crate::state::{
-    StrategyAccount, StrategyAsset, WalletConfig, ASSET_SEED, AUTHORITY_SEED, STRATEGY_SEED,
-    VAULT_SEED, WALLET_CONFIG_VERSION, WALLET_SEED,
+    RelayPendingDeposit, RelayPendingGasTopUp, RelayPendingSell, RelayReceipt, RemoteMintAggregate,
+    RemoteStrategyAsset, StrategyAccount, StrategyAsset, WalletConfig, ASSET_SEED, AUTHORITY_SEED,
+    RELAY_ACTION_ASSET_RESTORE, RELAY_ACTION_CREDIT_ASSET, RELAY_ACTION_DEPOSIT,
+    RELAY_ACTION_DEPOSIT_RELEASE, RELAY_ACTION_GAS_TOP_UP, RELAY_ACTION_GAS_TOP_UP_RELEASE,
+    RELAY_ACTION_REMOTE_SELL, RELAY_ACTION_USDC_RETURN, RELAY_PENDING_DEPOSIT_SEED,
+    RELAY_PENDING_SELL_SEED, RELAY_RECEIPT_SEED, REMOTE_AGGREGATE_SEED, REMOTE_ASSET_SEED,
+    STRATEGY_SEED, VAULT_SEED, WALLET_SEED,
 };
 
 const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
@@ -58,27 +63,20 @@ pub fn process_instruction(
             rotate_session(program_id, accounts, new_session)
         }
         StrategySpendInstruction::Revoke => revoke(program_id, accounts),
-        StrategySpendInstruction::ExecuteSwap {
-            is_buy,
-            usdc_amount,
-            token_amount,
-            jupiter_data,
-        } => execute_swap(
-            program_id,
-            accounts,
-            is_buy,
-            usdc_amount,
-            token_amount,
-            jupiter_data,
-        ),
+        StrategySpendInstruction::WithdrawAsset { amount } => {
+            withdraw_asset(program_id, accounts, amount)
+        }
+        StrategySpendInstruction::CloseStrategy => close_strategy(program_id, accounts),
         StrategySpendInstruction::ExecuteSwapWithFees {
             is_buy,
             usdc_amount,
             token_amount,
             platform_fee_usdc,
-            gas_reimburse_usdc,
-            min_native_out,
+            gas_mode,
+            gas_top_up_usdc,
+            native_amount,
             treasury,
+            gas_recipient,
             jupiter_data,
             gas_jupiter_data,
         } => execute_swap_with_fees(
@@ -88,42 +86,159 @@ pub fn process_instruction(
             usdc_amount,
             token_amount,
             platform_fee_usdc,
-            gas_reimburse_usdc,
-            min_native_out,
+            gas_mode,
+            gas_top_up_usdc,
+            native_amount,
             treasury,
+            gas_recipient,
             jupiter_data,
             gas_jupiter_data,
         ),
-        StrategySpendInstruction::WithdrawAsset { amount } => {
-            withdraw_asset(program_id, accounts, amount)
-        }
-        StrategySpendInstruction::CloseStrategy => close_strategy(program_id, accounts),
-        StrategySpendInstruction::ExecuteSwapWithFeesV2 {
-            is_buy,
-            usdc_amount,
-            token_amount,
+        StrategySpendInstruction::ExecuteRelayDeposit {
+            relay_order_id,
+            funding_chain_id,
+            amount,
+            min_dest_amount,
+            locked_cost_usdc,
             platform_fee_usdc,
-            gas_mode,
-            gas_top_up_usdc,
-            native_amount,
-            treasury,
-            gas_recipient,
-            jupiter_data,
-            gas_jupiter_data,
-        } => execute_swap_with_fees_v2(
+            nonce,
+            deadline,
+            relay_ix_data,
+        } => execute_relay_deposit(
             program_id,
             accounts,
-            is_buy,
-            usdc_amount,
-            token_amount,
+            relay_order_id,
+            funding_chain_id,
+            amount,
+            min_dest_amount,
+            locked_cost_usdc,
             platform_fee_usdc,
-            gas_mode,
-            gas_top_up_usdc,
-            native_amount,
-            treasury,
+            nonce,
+            deadline,
+            relay_ix_data,
+        ),
+        StrategySpendInstruction::CreditRelayAsset {
+            relay_order_id,
+            funding_chain_id,
+            credit_quantity,
+            cost_usdc,
+            min_credit_qty,
+            max_credit_qty,
+            nonce,
+            deadline,
+        } => credit_relay_asset(
+            program_id,
+            accounts,
+            relay_order_id,
+            funding_chain_id,
+            credit_quantity,
+            cost_usdc,
+            min_credit_qty,
+            max_credit_qty,
+            nonce,
+            deadline,
+        ),
+        StrategySpendInstruction::ExecuteRemoteRelaySell {
+            relay_order_id,
+            funding_chain_id,
+            sell_quantity,
+            min_return_usdc,
+            nonce,
+            deadline,
+            relay_ix_data,
+        } => execute_remote_relay_sell(
+            program_id,
+            accounts,
+            relay_order_id,
+            funding_chain_id,
+            sell_quantity,
+            min_return_usdc,
+            nonce,
+            deadline,
+            relay_ix_data,
+        ),
+        StrategySpendInstruction::CreditUsdcReturn {
+            relay_order_id,
+            funding_chain_id,
+            gross_return_usdc,
+            quantity_released,
+            cost_released_usdc,
+            platform_fee_usdc,
+            nonce,
+            deadline,
+        } => credit_usdc_return(
+            program_id,
+            accounts,
+            relay_order_id,
+            funding_chain_id,
+            gross_return_usdc,
+            quantity_released,
+            cost_released_usdc,
+            platform_fee_usdc,
+            nonce,
+            deadline,
+        ),
+        StrategySpendInstruction::ReleaseRelayDeposit {
+            relay_order_id,
+            refund_amount_usdc,
+            locked_cost_usdc,
+            nonce,
+            deadline,
+        } => release_relay_deposit(
+            program_id,
+            accounts,
+            relay_order_id,
+            refund_amount_usdc,
+            locked_cost_usdc,
+            nonce,
+            deadline,
+        ),
+        StrategySpendInstruction::RestoreRemoteRelayAsset {
+            relay_order_id,
+            funding_chain_id,
+            restore_quantity,
+            restore_cost_usdc,
+            nonce,
+            deadline,
+        } => restore_remote_relay_asset(
+            program_id,
+            accounts,
+            relay_order_id,
+            funding_chain_id,
+            restore_quantity,
+            restore_cost_usdc,
+            nonce,
+            deadline,
+        ),
+        StrategySpendInstruction::ExecuteRelayGasTopUp {
+            relay_order_id,
+            overhead_usdc,
             gas_recipient,
-            jupiter_data,
-            gas_jupiter_data,
+            nonce,
+            deadline,
+            relay_ix_data,
+        } => execute_relay_gas_top_up(
+            program_id,
+            accounts,
+            relay_order_id,
+            overhead_usdc,
+            gas_recipient,
+            nonce,
+            deadline,
+            relay_ix_data,
+        ),
+        StrategySpendInstruction::ReleaseRelayGasTopUp {
+            relay_order_id,
+            refund_usdc,
+            nonce,
+            deadline,
+        } => release_relay_gas_top_up(
+            program_id,
+            accounts,
+            relay_order_id,
+            refund_usdc,
+            nonce,
+            deadline,
         ),
     }
 }
@@ -134,6 +249,8 @@ fn init_wallet(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let wallet = next_account_info(account_iter)?;
     let usdc_mint = next_account_info(account_iter)?;
     let jupiter_program = next_account_info(account_iter)?;
+    let relay_depository_program = next_account_info(account_iter)?;
+    let platform_relayer = next_account_info(account_iter)?;
     let system_program_account = next_account_info(account_iter)?;
 
     if !owner.is_signer {
@@ -163,12 +280,13 @@ fn init_wallet(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     )?;
 
     WalletConfig {
-        version: WALLET_CONFIG_VERSION,
         owner: *owner.key,
         usdc_mint: *usdc_mint.key,
         token_program: spl_token::id(),
-        associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
+        ata_program: ASSOCIATED_TOKEN_PROGRAM_ID,
         jupiter_program: *jupiter_program.key,
+        relay_depository_program: *relay_depository_program.key,
+        platform_relayer: *platform_relayer.key,
         authority_bump,
     }
     .serialize(&mut &mut wallet.data.borrow_mut()[..])?;
@@ -329,361 +447,16 @@ fn revoke(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
         return Err(StrategySpendError::MissingSignature.into());
     }
     state.revoked = true;
+    state.nonce = state
+        .nonce
+        .checked_add(1)
+        .ok_or(StrategySpendError::Overflow)?;
     state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
-    Ok(())
-}
-
-fn execute_swap(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    is_buy: bool,
-    usdc_amount: u64,
-    token_amount: u64,
-    jupiter_data: Vec<u8>,
-) -> ProgramResult {
-    if jupiter_data.is_empty() || usdc_amount == 0 || token_amount == 0 {
-        return Err(StrategySpendError::InvalidInstruction.into());
-    }
-
-    let account_iter = &mut accounts.iter();
-    let session = next_account_info(account_iter)?;
-    let relayer = next_account_info(account_iter)?;
-    let owner = next_account_info(account_iter)?;
-    let wallet = next_account_info(account_iter)?;
-    let strategy = next_account_info(account_iter)?;
-    let vault_authority = next_account_info(account_iter)?;
-    let owner_usdc = next_account_info(account_iter)?;
-    let strategy_usdc = next_account_info(account_iter)?;
-    let strategy_token_vault = next_account_info(account_iter)?;
-    let asset_account = next_account_info(account_iter)?;
-    let token_mint = next_account_info(account_iter)?;
-    let usdc_mint = next_account_info(account_iter)?;
-    let token_program = next_account_info(account_iter)?;
-    let associated_token_program = next_account_info(account_iter)?;
-    let system_program_account = next_account_info(account_iter)?;
-    let program_authority = next_account_info(account_iter)?;
-    let jupiter_program = next_account_info(account_iter)?;
-
-    if !session.is_signer || !relayer.is_signer {
-        return Err(StrategySpendError::MissingSignature.into());
-    }
-
-    let wallet_config = load_wallet(program_id, owner.key, wallet)?;
-    let mut strategy_state = load_strategy(program_id, strategy)?;
-    assert_active_strategy(&strategy_state, session.key)?;
-    if strategy_state.owner != *owner.key {
-        return Err(StrategySpendError::OwnerMismatch.into());
-    }
-
-    assert_system_program(system_program_account)?;
-    assert_token_program(token_program, &wallet_config)?;
-    assert_associated_token_program(associated_token_program, &wallet_config)?;
-    if usdc_mint.key != &wallet_config.usdc_mint {
-        return Err(StrategySpendError::MintMismatch.into());
-    }
-    if jupiter_program.key != &wallet_config.jupiter_program {
-        return Err(StrategySpendError::ProgramMismatch.into());
-    }
-
-    let (expected_authority, authority_bump) =
-        Pubkey::find_program_address(&[AUTHORITY_SEED, owner.key.as_ref()], program_id);
-    if program_authority.key != &expected_authority
-        || wallet_config.authority_bump != authority_bump
-    {
-        return Err(StrategySpendError::InvalidAccount.into());
-    }
-
-    let (expected_vault_authority, vault_bump) =
-        Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
-    if vault_authority.key != &expected_vault_authority || strategy_state.vault_bump != vault_bump {
-        return Err(StrategySpendError::InvalidAccount.into());
-    }
-
-    ensure_vault_ata(
-        relayer,
-        strategy_usdc,
-        vault_authority,
-        usdc_mint,
-        token_program,
-        associated_token_program,
-        system_program_account,
-    )?;
-    ensure_vault_ata(
-        relayer,
-        strategy_token_vault,
-        vault_authority,
-        token_mint,
-        token_program,
-        associated_token_program,
-        system_program_account,
-    )?;
-    assert_strategy_vault(
-        strategy_usdc,
-        vault_authority.key,
-        usdc_mint.key,
-        token_program.key,
-    )?;
-    assert_strategy_vault(
-        strategy_token_vault,
-        vault_authority.key,
-        token_mint.key,
-        token_program.key,
-    )?;
-
-    let (expected_asset, asset_bump) = Pubkey::find_program_address(
-        &[ASSET_SEED, strategy.key.as_ref(), token_mint.key.as_ref()],
-        program_id,
-    );
-    if asset_account.key != &expected_asset {
-        return Err(StrategySpendError::InvalidAccount.into());
-    }
-
-    ensure_asset_account(
-        asset_account,
-        strategy,
-        token_mint,
-        program_id,
-        relayer,
-        system_program_account,
-        asset_bump,
-    )?;
-
-    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
-    if owner_usdc.key != &owner_usdc_expected {
-        return Err(StrategySpendError::InvalidAccount.into());
-    }
-    assert_usdc_account(owner_usdc, owner.key, &wallet_config.usdc_mint)?;
-
-    let protected_accounts = [
-        session.key,
-        relayer.key,
-        owner.key,
-        wallet.key,
-        strategy.key,
-        owner_usdc.key,
-        asset_account.key,
-        program_authority.key,
-    ];
-
-    if is_buy {
-        let deployable = strategy_state
-            .capacity_usdc
-            .checked_sub(strategy_state.deployed_usdc)
-            .ok_or(StrategySpendError::CapacityExceeded)?;
-        if usdc_amount > deployable {
-            return Err(StrategySpendError::CapacityExceeded.into());
-        }
-
-        let max_usdc_atomic = scale_to_mint_atomic(usdc_amount, usdc_mint)?;
-        let owner_usdc_before = token_account_amount(owner_usdc)?;
-        let strategy_usdc_before = token_account_amount(strategy_usdc)?;
-        let token_before = token_account_amount(strategy_token_vault)?;
-
-        invoke_signed(
-            &token_instruction::transfer_checked(
-                token_program.key,
-                owner_usdc.key,
-                usdc_mint.key,
-                strategy_usdc.key,
-                program_authority.key,
-                &[],
-                max_usdc_atomic,
-                mint_decimals(usdc_mint)?,
-            )?,
-            &[
-                owner_usdc.clone(),
-                usdc_mint.clone(),
-                strategy_usdc.clone(),
-                program_authority.clone(),
-                token_program.clone(),
-            ],
-            &[&[AUTHORITY_SEED, owner.key.as_ref(), &[authority_bump]]],
-        )?;
-
-        cpi_jupiter(
-            jupiter_program,
-            &account_iter.cloned().collect::<Vec<_>>(),
-            &jupiter_data,
-            vault_authority,
-            strategy.key,
-            vault_bump,
-            &protected_accounts,
-            &[session.key, relayer.key],
-        )?;
-
-        let strategy_usdc_after_swap = token_account_amount(strategy_usdc)?;
-        let funded_balance = strategy_usdc_before
-            .checked_add(max_usdc_atomic)
-            .ok_or(StrategySpendError::Overflow)?;
-        let spent_atomic = funded_balance
-            .checked_sub(strategy_usdc_after_swap)
-            .ok_or(StrategySpendError::InvalidAccount)?;
-        if spent_atomic == 0 || spent_atomic > max_usdc_atomic {
-            return Err(StrategySpendError::InvalidAccount.into());
-        }
-
-        let unused = max_usdc_atomic
-            .checked_sub(spent_atomic)
-            .ok_or(StrategySpendError::InvalidAccount)?;
-        if unused > 0 {
-            transfer_from_vault(
-                token_program,
-                strategy_usdc,
-                usdc_mint,
-                owner_usdc,
-                vault_authority,
-                strategy,
-                vault_bump,
-                unused,
-            )?;
-        }
-
-        let owner_usdc_after = token_account_amount(owner_usdc)?;
-        let owner_spent_atomic = owner_usdc_before
-            .checked_sub(owner_usdc_after)
-            .ok_or(StrategySpendError::InvalidAccount)?;
-        if owner_spent_atomic != spent_atomic {
-            return Err(StrategySpendError::InvalidAccount.into());
-        }
-        let spent_usdc = normalize_from_mint_atomic(spent_atomic, usdc_mint)?;
-        if spent_usdc == 0 || spent_usdc > usdc_amount {
-            return Err(StrategySpendError::InvalidAccount.into());
-        }
-
-        let token_after = token_account_amount(strategy_token_vault)?;
-        let received = token_after
-            .checked_sub(token_before)
-            .ok_or(StrategySpendError::InvalidAccount)?;
-        if received < token_amount {
-            return Err(StrategySpendError::InvalidAccount.into());
-        }
-
-        let mut asset = load_or_default_asset(asset_account)?;
-        asset.quantity = asset
-            .quantity
-            .checked_add(received)
-            .ok_or(StrategySpendError::Overflow)?;
-        asset.cost_usdc = asset
-            .cost_usdc
-            .checked_add(spent_usdc)
-            .ok_or(StrategySpendError::Overflow)?;
-        asset.serialize(&mut &mut asset_account.data.borrow_mut()[..])?;
-
-        strategy_state.deployed_usdc = strategy_state
-            .deployed_usdc
-            .checked_add(spent_usdc)
-            .ok_or(StrategySpendError::Overflow)?;
-    } else {
-        let mut asset = load_or_default_asset(asset_account)?;
-        if asset.quantity < token_amount {
-            return Err(StrategySpendError::InsufficientAsset.into());
-        }
-
-        let token_before = token_account_amount(strategy_token_vault)?;
-        let strategy_usdc_before = token_account_amount(strategy_usdc)?;
-        let remaining_accounts = account_iter.cloned().collect::<Vec<_>>();
-        cpi_jupiter(
-            jupiter_program,
-            &remaining_accounts,
-            &jupiter_data,
-            vault_authority,
-            strategy.key,
-            vault_bump,
-            &protected_accounts,
-            &[session.key, relayer.key],
-        )?;
-
-        let token_after = token_account_amount(strategy_token_vault)?;
-        let token_sold = token_before
-            .checked_sub(token_after)
-            .ok_or(StrategySpendError::InvalidAccount)?;
-        if token_sold == 0 || token_sold > token_amount || asset.quantity < token_sold {
-            return Err(StrategySpendError::InvalidAccount.into());
-        }
-
-        let strategy_usdc_after = token_account_amount(strategy_usdc)?;
-        let usdc_received_atomic = strategy_usdc_after
-            .checked_sub(strategy_usdc_before)
-            .ok_or(StrategySpendError::InvalidAccount)?;
-        let usdc_received = normalize_from_mint_atomic(usdc_received_atomic, usdc_mint)?;
-        if usdc_received < usdc_amount {
-            return Err(StrategySpendError::InvalidAccount.into());
-        }
-        transfer_from_vault(
-            token_program,
-            strategy_usdc,
-            usdc_mint,
-            owner_usdc,
-            vault_authority,
-            strategy,
-            vault_bump,
-            usdc_received_atomic,
-        )?;
-
-        let cost_sold = pro_rata_cost(asset.cost_usdc, asset.quantity, token_sold)?;
-        let realized_pnl = i128::from(usdc_received)
-            .checked_sub(i128::from(cost_sold))
-            .ok_or(StrategySpendError::Overflow)?;
-        let realized_pnl = i64::try_from(realized_pnl).map_err(|_| StrategySpendError::Overflow)?;
-        strategy_state.capacity_usdc = apply_realized_pnl(
-            strategy_state.capacity_usdc,
-            strategy_state.limit_usdc,
-            realized_pnl,
-        )?;
-
-        asset.quantity = asset
-            .quantity
-            .checked_sub(token_sold)
-            .ok_or(StrategySpendError::Overflow)?;
-        asset.cost_usdc = asset
-            .cost_usdc
-            .checked_sub(cost_sold)
-            .ok_or(StrategySpendError::Overflow)?;
-        asset.serialize(&mut &mut asset_account.data.borrow_mut()[..])?;
-
-        strategy_state.deployed_usdc = strategy_state
-            .deployed_usdc
-            .checked_sub(cost_sold)
-            .ok_or(StrategySpendError::Overflow)?;
-    }
-
-    strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn execute_swap_with_fees(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    is_buy: bool,
-    usdc_amount: u64,
-    token_amount: u64,
-    platform_fee_usdc: u64,
-    gas_reimburse_usdc: u64,
-    min_native_out: u64,
-    treasury: Pubkey,
-    jupiter_data: Vec<u8>,
-    gas_jupiter_data: Vec<u8>,
-) -> ProgramResult {
-    execute_swap_with_fees_impl(
-        program_id,
-        accounts,
-        is_buy,
-        usdc_amount,
-        token_amount,
-        platform_fee_usdc,
-        gas_reimburse_usdc,
-        0,
-        min_native_out,
-        None,
-        treasury,
-        jupiter_data,
-        gas_jupiter_data,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn execute_swap_with_fees_v2(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
     is_buy: bool,
@@ -1666,6 +1439,1583 @@ fn perform_sell_swap<'a>(
     Ok(())
 }
 
+fn funding_chain_seed(funding_chain_id: u64) -> [u8; 8] {
+    funding_chain_id.to_le_bytes()
+}
+
+fn relay_receipt_pda(
+    program_id: &Pubkey,
+    strategy: &Pubkey,
+    relay_order_id: &[u8; 32],
+    action: u8,
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            RELAY_RECEIPT_SEED,
+            strategy.as_ref(),
+            relay_order_id.as_ref(),
+            &[action],
+        ],
+        program_id,
+    )
+}
+
+fn remote_asset_pda(
+    program_id: &Pubkey,
+    strategy: &Pubkey,
+    mint: &Pubkey,
+    funding_chain_id: u64,
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            REMOTE_ASSET_SEED,
+            strategy.as_ref(),
+            mint.as_ref(),
+            &funding_chain_seed(funding_chain_id),
+        ],
+        program_id,
+    )
+}
+
+fn remote_aggregate_pda(program_id: &Pubkey, strategy: &Pubkey, mint: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[REMOTE_AGGREGATE_SEED, strategy.as_ref(), mint.as_ref()],
+        program_id,
+    )
+}
+
+fn relay_pending_deposit_pda(
+    program_id: &Pubkey,
+    strategy: &Pubkey,
+    relay_order_id: &[u8; 32],
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            RELAY_PENDING_DEPOSIT_SEED,
+            strategy.as_ref(),
+            relay_order_id.as_ref(),
+        ],
+        program_id,
+    )
+}
+
+fn relay_pending_sell_pda(
+    program_id: &Pubkey,
+    strategy: &Pubkey,
+    relay_order_id: &[u8; 32],
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            RELAY_PENDING_SELL_SEED,
+            strategy.as_ref(),
+            relay_order_id.as_ref(),
+        ],
+        program_id,
+    )
+}
+
+fn assert_platform_relayer(platform_relayer: &AccountInfo, wallet: &WalletConfig) -> ProgramResult {
+    if !platform_relayer.is_signer || platform_relayer.key != &wallet.platform_relayer {
+        return Err(StrategySpendError::RelayerMismatch.into());
+    }
+    Ok(())
+}
+
+fn assert_relay_intent(strategy: &StrategyAccount, nonce: u64, deadline: i64) -> ProgramResult {
+    if strategy.nonce != nonce {
+        return Err(StrategySpendError::NonceMismatch.into());
+    }
+    if Clock::get()?.unix_timestamp > deadline {
+        return Err(StrategySpendError::Expired.into());
+    }
+    Ok(())
+}
+
+fn bump_nonce(strategy_state: &mut StrategyAccount) -> Result<(), ProgramError> {
+    strategy_state.nonce = strategy_state
+        .nonce
+        .checked_add(1)
+        .ok_or(StrategySpendError::Overflow)?;
+    Ok(())
+}
+
+fn consume_relay_receipt<'a>(
+    receipt: &AccountInfo<'a>,
+    strategy: &AccountInfo<'a>,
+    relay_order_id: &[u8; 32],
+    action: u8,
+    program_id: &Pubkey,
+    payer: &AccountInfo<'a>,
+    system_program_account: &AccountInfo<'a>,
+) -> ProgramResult {
+    let (expected, bump) = relay_receipt_pda(program_id, strategy.key, relay_order_id, action);
+    if receipt.key != &expected {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    if !receipt.data_is_empty() {
+        return Err(StrategySpendError::RelayOrderConsumed.into());
+    }
+    create_pda(
+        payer,
+        receipt,
+        system_program_account,
+        program_id,
+        RelayReceipt::LEN,
+        &[
+            RELAY_RECEIPT_SEED,
+            strategy.key.as_ref(),
+            relay_order_id.as_ref(),
+            &[action],
+            &[bump],
+        ],
+    )?;
+    RelayReceipt { action, bump }.serialize(&mut &mut receipt.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+fn cpi_relay_depository<'account>(
+    wallet: &WalletConfig,
+    relay_depository: &AccountInfo<'account>,
+    relay_ix_data: &[u8],
+    remaining: &[AccountInfo<'account>],
+    vault_authority: &AccountInfo<'account>,
+    strategy: &Pubkey,
+    vault_bump: u8,
+    protected_accounts: &[&Pubkey],
+    outer_signers: &[&Pubkey],
+) -> ProgramResult {
+    if relay_depository.key != &wallet.relay_depository_program {
+        return Err(StrategySpendError::ProgramMismatch.into());
+    }
+    if relay_ix_data.is_empty() || remaining.is_empty() {
+        return Err(StrategySpendError::RelayCpiFailed.into());
+    }
+    for account in remaining {
+        if protected_accounts.contains(&account.key) {
+            return Err(StrategySpendError::InvalidAccount.into());
+        }
+        if account.is_signer
+            && account.key != vault_authority.key
+            && !outer_signers.contains(&account.key)
+        {
+            return Err(StrategySpendError::InvalidAccount.into());
+        }
+    }
+
+    let instruction = solana_program::instruction::Instruction {
+        program_id: *relay_depository.key,
+        accounts: remaining
+            .iter()
+            .map(|account| solana_program::instruction::AccountMeta {
+                pubkey: *account.key,
+                is_signer: account.key == vault_authority.key,
+                is_writable: account.is_writable,
+            })
+            .collect(),
+        data: relay_ix_data.to_vec(),
+    };
+    let mut infos = remaining.to_vec();
+    infos.push(relay_depository.clone());
+    invoke_signed(
+        &instruction,
+        &infos,
+        &[&[VAULT_SEED, strategy.as_ref(), &[vault_bump]]],
+    )
+    .map_err(|_| StrategySpendError::RelayCpiFailed)?;
+    Ok(())
+}
+
+fn create_relay_pending_deposit<'a>(
+    pending: &AccountInfo<'a>,
+    strategy: &AccountInfo<'a>,
+    relay_order_id: &[u8; 32],
+    record: RelayPendingDeposit,
+    program_id: &Pubkey,
+    payer: &AccountInfo<'a>,
+    system_program_account: &AccountInfo<'a>,
+    bump: u8,
+) -> ProgramResult {
+    if !pending.data_is_empty() {
+        return Err(StrategySpendError::AlreadyInitialized.into());
+    }
+    create_pda(
+        payer,
+        pending,
+        system_program_account,
+        program_id,
+        RelayPendingDeposit::LEN,
+        &[
+            RELAY_PENDING_DEPOSIT_SEED,
+            strategy.key.as_ref(),
+            relay_order_id.as_ref(),
+            &[bump],
+        ],
+    )?;
+    record.serialize(&mut &mut pending.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+fn load_relay_pending_deposit(pending: &AccountInfo) -> Result<RelayPendingDeposit, ProgramError> {
+    RelayPendingDeposit::try_from_slice(&pending.data.borrow())
+        .map_err(|_| StrategySpendError::InvalidAccount.into())
+}
+
+fn close_relay_pending_deposit<'a>(
+    pending: &AccountInfo<'a>,
+    recipient: &AccountInfo<'a>,
+) -> ProgramResult {
+    **recipient.lamports.borrow_mut() = recipient
+        .lamports()
+        .checked_add(pending.lamports())
+        .ok_or(StrategySpendError::Overflow)?;
+    **pending.lamports.borrow_mut() = 0;
+    pending.assign(&system_program::id());
+    pending.realloc(0, false)?;
+    Ok(())
+}
+
+fn create_relay_pending_sell<'a>(
+    pending: &AccountInfo<'a>,
+    strategy: &AccountInfo<'a>,
+    relay_order_id: &[u8; 32],
+    record: RelayPendingSell,
+    program_id: &Pubkey,
+    payer: &AccountInfo<'a>,
+    system_program_account: &AccountInfo<'a>,
+    bump: u8,
+) -> ProgramResult {
+    if !pending.data_is_empty() {
+        return Err(StrategySpendError::AlreadyInitialized.into());
+    }
+    create_pda(
+        payer,
+        pending,
+        system_program_account,
+        program_id,
+        RelayPendingSell::LEN,
+        &[
+            RELAY_PENDING_SELL_SEED,
+            strategy.key.as_ref(),
+            relay_order_id.as_ref(),
+            &[bump],
+        ],
+    )?;
+    record.serialize(&mut &mut pending.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+fn load_relay_pending_sell(pending: &AccountInfo) -> Result<RelayPendingSell, ProgramError> {
+    RelayPendingSell::try_from_slice(&pending.data.borrow())
+        .map_err(|_| StrategySpendError::InvalidAccount.into())
+}
+
+fn close_relay_pending_sell<'a>(
+    pending: &AccountInfo<'a>,
+    recipient: &AccountInfo<'a>,
+) -> ProgramResult {
+    close_relay_pending_deposit(pending, recipient)
+}
+
+fn require_relay_pending_sell(
+    pending_account: &AccountInfo,
+    program_id: &Pubkey,
+    strategy: &Pubkey,
+    strategy_id: &[u8; 32],
+    relay_order_id: &[u8; 32],
+    funding_chain_id: u64,
+    quantity: u64,
+    cost_usdc: u64,
+) -> Result<RelayPendingSell, ProgramError> {
+    let (expected_pending, _) = relay_pending_sell_pda(program_id, strategy, relay_order_id);
+    if pending_account.key != &expected_pending {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    let pending = load_relay_pending_sell(pending_account)?;
+    if pending.strategy_id != *strategy_id
+        || pending.sell_quantity != quantity
+        || pending.provisional_cost_usdc != cost_usdc
+        || pending.funding_chain_id != funding_chain_id
+    {
+        return Err(StrategySpendError::PendingRecordMissing.into());
+    }
+    Ok(pending)
+}
+
+fn vault_token_surplus(
+    vault: &AccountInfo,
+    aggregate: &RemoteMintAggregate,
+) -> Result<u64, ProgramError> {
+    let balance = token_account_amount(vault)?;
+    balance
+        .checked_sub(aggregate.total_accounted)
+        .ok_or(StrategySpendError::InsufficientVaultSurplus.into())
+}
+
+fn ensure_remote_aggregate<'a>(
+    aggregate: &AccountInfo<'a>,
+    strategy: &AccountInfo<'a>,
+    mint: &AccountInfo<'a>,
+    program_id: &Pubkey,
+    payer: &AccountInfo<'a>,
+    system_program_account: &AccountInfo<'a>,
+    bump: u8,
+) -> ProgramResult {
+    if !aggregate.data_is_empty() {
+        return Ok(());
+    }
+    create_pda(
+        payer,
+        aggregate,
+        system_program_account,
+        program_id,
+        RemoteMintAggregate::LEN,
+        &[
+            REMOTE_AGGREGATE_SEED,
+            strategy.key.as_ref(),
+            mint.key.as_ref(),
+            &[bump],
+        ],
+    )?;
+    RemoteMintAggregate {
+        total_accounted: 0,
+        bump,
+    }
+    .serialize(&mut &mut aggregate.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+fn ensure_remote_asset<'a>(
+    remote_asset: &AccountInfo<'a>,
+    strategy: &AccountInfo<'a>,
+    mint: &AccountInfo<'a>,
+    funding_chain_id: u64,
+    program_id: &Pubkey,
+    payer: &AccountInfo<'a>,
+    system_program_account: &AccountInfo<'a>,
+    bump: u8,
+) -> ProgramResult {
+    if !remote_asset.data_is_empty() {
+        return Ok(());
+    }
+    create_pda(
+        payer,
+        remote_asset,
+        system_program_account,
+        program_id,
+        RemoteStrategyAsset::LEN,
+        &[
+            REMOTE_ASSET_SEED,
+            strategy.key.as_ref(),
+            mint.key.as_ref(),
+            &funding_chain_seed(funding_chain_id),
+            &[bump],
+        ],
+    )?;
+    RemoteStrategyAsset {
+        quantity: 0,
+        cost_usdc: 0,
+        funding_chain_id,
+        bump,
+    }
+    .serialize(&mut &mut remote_asset.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+fn load_remote_aggregate(aggregate: &AccountInfo) -> Result<RemoteMintAggregate, ProgramError> {
+    RemoteMintAggregate::try_from_slice(&aggregate.data.borrow())
+        .map_err(|_| StrategySpendError::InvalidAccount.into())
+}
+
+fn load_remote_asset(remote_asset: &AccountInfo) -> Result<RemoteStrategyAsset, ProgramError> {
+    RemoteStrategyAsset::try_from_slice(&remote_asset.data.borrow())
+        .map_err(|_| StrategySpendError::InvalidAccount.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_relay_deposit(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    relay_order_id: [u8; 32],
+    funding_chain_id: u64,
+    amount: u64,
+    min_dest_amount: u64,
+    locked_cost_usdc: u64,
+    platform_fee_usdc: u64,
+    nonce: u64,
+    deadline: i64,
+    relay_ix_data: Vec<u8>,
+) -> ProgramResult {
+    if amount == 0 || locked_cost_usdc == 0 || locked_cost_usdc > amount || min_dest_amount == 0 {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+
+    let account_iter = &mut accounts.iter();
+    let session = next_account_info(account_iter)?;
+    let platform_relayer = next_account_info(account_iter)?;
+    let owner = next_account_info(account_iter)?;
+    let wallet = next_account_info(account_iter)?;
+    let strategy = next_account_info(account_iter)?;
+    let vault_authority = next_account_info(account_iter)?;
+    let owner_usdc = next_account_info(account_iter)?;
+    let strategy_usdc = next_account_info(account_iter)?;
+    let program_authority = next_account_info(account_iter)?;
+    let relay_receipt = next_account_info(account_iter)?;
+    let relay_pending_deposit = next_account_info(account_iter)?;
+    let treasury_usdc = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    let associated_token_program = next_account_info(account_iter)?;
+    let system_program_account = next_account_info(account_iter)?;
+    let relay_depository = next_account_info(account_iter)?;
+
+    if !session.is_signer {
+        return Err(StrategySpendError::MissingSignature.into());
+    }
+
+    let wallet_config = load_wallet(program_id, owner.key, wallet)?;
+    assert_platform_relayer(platform_relayer, &wallet_config)?;
+    let mut strategy_state = load_strategy(program_id, strategy)?;
+    assert_active_strategy(&strategy_state, session.key)?;
+    if strategy_state.owner != *owner.key {
+        return Err(StrategySpendError::OwnerMismatch.into());
+    }
+    assert_relay_intent(&strategy_state, nonce, deadline)?;
+
+    assert_system_program(system_program_account)?;
+    assert_token_program(token_program, &wallet_config)?;
+    assert_associated_token_program(associated_token_program, &wallet_config)?;
+
+    let (expected_authority, authority_bump) =
+        Pubkey::find_program_address(&[AUTHORITY_SEED, owner.key.as_ref()], program_id);
+    if program_authority.key != &expected_authority
+        || wallet_config.authority_bump != authority_bump
+    {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    let (expected_vault_authority, vault_bump) =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
+    if vault_authority.key != &expected_vault_authority || strategy_state.vault_bump != vault_bump {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    let usdc_mint = next_account_info(account_iter)?;
+    if usdc_mint.key != &wallet_config.usdc_mint {
+        return Err(StrategySpendError::MintMismatch.into());
+    }
+
+    ensure_vault_ata(
+        platform_relayer,
+        strategy_usdc,
+        vault_authority,
+        usdc_mint,
+        token_program,
+        associated_token_program,
+        system_program_account,
+    )?;
+    assert_strategy_vault(
+        strategy_usdc,
+        vault_authority.key,
+        usdc_mint.key,
+        token_program.key,
+    )?;
+
+    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
+    if owner_usdc.key != &owner_usdc_expected {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    assert_usdc_account(owner_usdc, owner.key, &wallet_config.usdc_mint)?;
+
+    let total_cost = locked_cost_usdc
+        .checked_add(platform_fee_usdc)
+        .ok_or(StrategySpendError::Overflow)?;
+    let deployable = strategy_state
+        .capacity_usdc
+        .checked_sub(strategy_state.deployed_usdc)
+        .ok_or(StrategySpendError::CapacityExceeded)?;
+    if total_cost > deployable {
+        return Err(StrategySpendError::CapacityExceeded.into());
+    }
+
+    let deposit_atomic = scale_to_mint_atomic(amount, usdc_mint)?;
+    invoke_signed(
+        &token_instruction::transfer_checked(
+            token_program.key,
+            owner_usdc.key,
+            usdc_mint.key,
+            strategy_usdc.key,
+            program_authority.key,
+            &[],
+            deposit_atomic,
+            mint_decimals(usdc_mint)?,
+        )?,
+        &[
+            owner_usdc.clone(),
+            usdc_mint.clone(),
+            strategy_usdc.clone(),
+            program_authority.clone(),
+            token_program.clone(),
+        ],
+        &[&[AUTHORITY_SEED, owner.key.as_ref(), &[authority_bump]]],
+    )?;
+
+    if platform_fee_usdc > 0 {
+        strategy_state.capacity_usdc = strategy_state
+            .capacity_usdc
+            .checked_sub(platform_fee_usdc)
+            .ok_or(StrategySpendError::Overflow)?;
+    }
+    strategy_state.deployed_usdc = strategy_state
+        .deployed_usdc
+        .checked_add(locked_cost_usdc)
+        .ok_or(StrategySpendError::Overflow)?;
+
+    let (expected_pending, pending_bump) =
+        relay_pending_deposit_pda(program_id, strategy.key, &relay_order_id);
+    if relay_pending_deposit.key != &expected_pending {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    create_relay_pending_deposit(
+        relay_pending_deposit,
+        strategy,
+        &relay_order_id,
+        RelayPendingDeposit {
+            strategy_id: strategy_state.strategy_id,
+            locked_cost_usdc,
+            origin_amount: amount,
+            funding_chain_id,
+            bump: pending_bump,
+        },
+        program_id,
+        platform_relayer,
+        system_program_account,
+        pending_bump,
+    )?;
+
+    if platform_fee_usdc > 0 {
+        let fee_atomic = scale_to_mint_atomic(platform_fee_usdc, usdc_mint)?;
+        transfer_from_vault(
+            token_program,
+            strategy_usdc,
+            usdc_mint,
+            treasury_usdc,
+            vault_authority,
+            strategy,
+            vault_bump,
+            fee_atomic,
+        )?;
+    }
+
+    let remaining_accounts = account_iter.cloned().collect::<Vec<_>>();
+    let protected = [
+        session.key,
+        platform_relayer.key,
+        owner.key,
+        wallet.key,
+        strategy.key,
+        vault_authority.key,
+        owner_usdc.key,
+        strategy_usdc.key,
+        program_authority.key,
+        relay_receipt.key,
+        relay_pending_deposit.key,
+        treasury_usdc.key,
+        usdc_mint.key,
+        token_program.key,
+        associated_token_program.key,
+        system_program_account.key,
+        relay_depository.key,
+    ];
+    cpi_relay_depository(
+        &wallet_config,
+        relay_depository,
+        &relay_ix_data,
+        &remaining_accounts,
+        vault_authority,
+        strategy.key,
+        vault_bump,
+        &protected,
+        &[platform_relayer.key],
+    )?;
+
+    consume_relay_receipt(
+        relay_receipt,
+        strategy,
+        &relay_order_id,
+        RELAY_ACTION_DEPOSIT,
+        program_id,
+        platform_relayer,
+        system_program_account,
+    )?;
+    bump_nonce(&mut strategy_state)?;
+    strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
+    msg!(
+        "POCKLESS_RELAY_DEPOSIT:{}:{}:{}",
+        strategy.key,
+        relay_order_id[0],
+        amount
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn credit_relay_asset(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    relay_order_id: [u8; 32],
+    funding_chain_id: u64,
+    credit_quantity: u64,
+    cost_usdc: u64,
+    min_credit_qty: u64,
+    max_credit_qty: u64,
+    nonce: u64,
+    deadline: i64,
+) -> ProgramResult {
+    if credit_quantity == 0 || min_credit_qty == 0 || max_credit_qty < min_credit_qty {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+    if credit_quantity < min_credit_qty || credit_quantity > max_credit_qty {
+        return Err(StrategySpendError::RelayCreditBelowMinimum.into());
+    }
+
+    let account_iter = &mut accounts.iter();
+    let session = next_account_info(account_iter)?;
+    let platform_relayer = next_account_info(account_iter)?;
+    let owner = next_account_info(account_iter)?;
+    let wallet = next_account_info(account_iter)?;
+    let strategy = next_account_info(account_iter)?;
+    let vault_authority = next_account_info(account_iter)?;
+    let strategy_token_vault = next_account_info(account_iter)?;
+    let token_mint = next_account_info(account_iter)?;
+    let remote_asset = next_account_info(account_iter)?;
+    let remote_aggregate = next_account_info(account_iter)?;
+    let relay_receipt = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    let system_program_account = next_account_info(account_iter)?;
+
+    if !session.is_signer {
+        return Err(StrategySpendError::MissingSignature.into());
+    }
+
+    let wallet_config = load_wallet(program_id, owner.key, wallet)?;
+    assert_platform_relayer(platform_relayer, &wallet_config)?;
+    let mut strategy_state = load_strategy(program_id, strategy)?;
+    assert_active_strategy(&strategy_state, session.key)?;
+    if strategy_state.owner != *owner.key {
+        return Err(StrategySpendError::OwnerMismatch.into());
+    }
+    assert_relay_intent(&strategy_state, nonce, deadline)?;
+
+    assert_system_program(system_program_account)?;
+    assert_token_program(token_program, &wallet_config)?;
+
+    let (expected_vault_authority, vault_bump) =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
+    if vault_authority.key != &expected_vault_authority || strategy_state.vault_bump != vault_bump {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    assert_strategy_vault(
+        strategy_token_vault,
+        vault_authority.key,
+        token_mint.key,
+        token_program.key,
+    )?;
+
+    let (expected_remote_asset, remote_asset_bump) =
+        remote_asset_pda(program_id, strategy.key, token_mint.key, funding_chain_id);
+    if remote_asset.key != &expected_remote_asset {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    let (expected_aggregate, aggregate_bump) =
+        remote_aggregate_pda(program_id, strategy.key, token_mint.key);
+    if remote_aggregate.key != &expected_aggregate {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    ensure_remote_aggregate(
+        remote_aggregate,
+        strategy,
+        token_mint,
+        program_id,
+        platform_relayer,
+        system_program_account,
+        aggregate_bump,
+    )?;
+    ensure_remote_asset(
+        remote_asset,
+        strategy,
+        token_mint,
+        funding_chain_id,
+        program_id,
+        platform_relayer,
+        system_program_account,
+        remote_asset_bump,
+    )?;
+
+    let mut aggregate = load_remote_aggregate(remote_aggregate)?;
+    let surplus = vault_token_surplus(strategy_token_vault, &aggregate)?;
+    let allowed = surplus.min(max_credit_qty);
+    if allowed < min_credit_qty || allowed != credit_quantity {
+        return Err(StrategySpendError::InsufficientVaultSurplus.into());
+    }
+
+    let mut remote = load_remote_asset(remote_asset)?;
+    if remote.funding_chain_id != funding_chain_id {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    remote.quantity = remote
+        .quantity
+        .checked_add(credit_quantity)
+        .ok_or(StrategySpendError::Overflow)?;
+    remote.cost_usdc = remote
+        .cost_usdc
+        .checked_add(cost_usdc)
+        .ok_or(StrategySpendError::Overflow)?;
+    remote.serialize(&mut &mut remote_asset.data.borrow_mut()[..])?;
+
+    aggregate.total_accounted = aggregate
+        .total_accounted
+        .checked_add(credit_quantity)
+        .ok_or(StrategySpendError::Overflow)?;
+    aggregate.serialize(&mut &mut remote_aggregate.data.borrow_mut()[..])?;
+
+    consume_relay_receipt(
+        relay_receipt,
+        strategy,
+        &relay_order_id,
+        RELAY_ACTION_CREDIT_ASSET,
+        program_id,
+        platform_relayer,
+        system_program_account,
+    )?;
+    bump_nonce(&mut strategy_state)?;
+    strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_remote_relay_sell(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    relay_order_id: [u8; 32],
+    funding_chain_id: u64,
+    sell_quantity: u64,
+    min_return_usdc: u64,
+    nonce: u64,
+    deadline: i64,
+    relay_ix_data: Vec<u8>,
+) -> ProgramResult {
+    if sell_quantity == 0 || min_return_usdc == 0 {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+
+    let account_iter = &mut accounts.iter();
+    let session = next_account_info(account_iter)?;
+    let platform_relayer = next_account_info(account_iter)?;
+    let owner = next_account_info(account_iter)?;
+    let wallet = next_account_info(account_iter)?;
+    let strategy = next_account_info(account_iter)?;
+    let vault_authority = next_account_info(account_iter)?;
+    let strategy_token_vault = next_account_info(account_iter)?;
+    let token_mint = next_account_info(account_iter)?;
+    let remote_asset = next_account_info(account_iter)?;
+    let remote_aggregate = next_account_info(account_iter)?;
+    let relay_receipt = next_account_info(account_iter)?;
+    let relay_pending_sell = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    let system_program_account = next_account_info(account_iter)?;
+    let relay_depository = next_account_info(account_iter)?;
+
+    if !session.is_signer {
+        return Err(StrategySpendError::MissingSignature.into());
+    }
+
+    let wallet_config = load_wallet(program_id, owner.key, wallet)?;
+    assert_platform_relayer(platform_relayer, &wallet_config)?;
+    let mut strategy_state = load_strategy(program_id, strategy)?;
+    assert_active_strategy(&strategy_state, session.key)?;
+    if strategy_state.owner != *owner.key {
+        return Err(StrategySpendError::OwnerMismatch.into());
+    }
+    assert_relay_intent(&strategy_state, nonce, deadline)?;
+    assert_system_program(system_program_account)?;
+    assert_token_program(token_program, &wallet_config)?;
+
+    let (expected_vault_authority, vault_bump) =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
+    if vault_authority.key != &expected_vault_authority || strategy_state.vault_bump != vault_bump {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    assert_strategy_vault(
+        strategy_token_vault,
+        vault_authority.key,
+        token_mint.key,
+        token_program.key,
+    )?;
+
+    let (expected_remote_asset, _) =
+        remote_asset_pda(program_id, strategy.key, token_mint.key, funding_chain_id);
+    if remote_asset.key != &expected_remote_asset {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    let (expected_aggregate, _) = remote_aggregate_pda(program_id, strategy.key, token_mint.key);
+    if remote_aggregate.key != &expected_aggregate {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    let mut remote = load_remote_asset(remote_asset)?;
+    if remote.funding_chain_id != funding_chain_id || remote.quantity < sell_quantity {
+        return Err(StrategySpendError::InsufficientRemoteAsset.into());
+    }
+
+    let cost_released = pro_rata_cost(remote.cost_usdc, remote.quantity, sell_quantity)?;
+    remote.quantity = remote
+        .quantity
+        .checked_sub(sell_quantity)
+        .ok_or(StrategySpendError::Overflow)?;
+    remote.cost_usdc = remote
+        .cost_usdc
+        .checked_sub(cost_released)
+        .ok_or(StrategySpendError::Overflow)?;
+    remote.serialize(&mut &mut remote_asset.data.borrow_mut()[..])?;
+
+    let mut aggregate = load_remote_aggregate(remote_aggregate)?;
+    aggregate.total_accounted = aggregate
+        .total_accounted
+        .checked_sub(sell_quantity)
+        .ok_or(StrategySpendError::Overflow)?;
+    aggregate.serialize(&mut &mut remote_aggregate.data.borrow_mut()[..])?;
+
+    let (expected_pending, pending_bump) =
+        relay_pending_sell_pda(program_id, strategy.key, &relay_order_id);
+    if relay_pending_sell.key != &expected_pending {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    create_relay_pending_sell(
+        relay_pending_sell,
+        strategy,
+        &relay_order_id,
+        RelayPendingSell {
+            strategy_id: strategy_state.strategy_id,
+            sell_quantity,
+            provisional_cost_usdc: cost_released,
+            funding_chain_id,
+            bump: pending_bump,
+        },
+        program_id,
+        platform_relayer,
+        system_program_account,
+        pending_bump,
+    )?;
+
+    let remaining_accounts = account_iter.cloned().collect::<Vec<_>>();
+    let protected = [
+        session.key,
+        platform_relayer.key,
+        owner.key,
+        wallet.key,
+        strategy.key,
+        vault_authority.key,
+        strategy_token_vault.key,
+        token_mint.key,
+        remote_asset.key,
+        remote_aggregate.key,
+        relay_receipt.key,
+        relay_pending_sell.key,
+        token_program.key,
+        system_program_account.key,
+        relay_depository.key,
+    ];
+    cpi_relay_depository(
+        &wallet_config,
+        relay_depository,
+        &relay_ix_data,
+        &remaining_accounts,
+        vault_authority,
+        strategy.key,
+        vault_bump,
+        &protected,
+        &[platform_relayer.key],
+    )?;
+
+    consume_relay_receipt(
+        relay_receipt,
+        strategy,
+        &relay_order_id,
+        RELAY_ACTION_REMOTE_SELL,
+        program_id,
+        platform_relayer,
+        system_program_account,
+    )?;
+    msg!(
+        "POCKLESS_REMOTE_SELL:{}:{}:{}:{}",
+        strategy.key,
+        relay_order_id[0],
+        sell_quantity,
+        cost_released
+    );
+    bump_nonce(&mut strategy_state)?;
+    strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn credit_usdc_return(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    relay_order_id: [u8; 32],
+    funding_chain_id: u64,
+    gross_return_usdc: u64,
+    quantity_released: u64,
+    cost_released_usdc: u64,
+    platform_fee_usdc: u64,
+    nonce: u64,
+    deadline: i64,
+) -> ProgramResult {
+    if gross_return_usdc == 0 || cost_released_usdc == 0 {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+    if platform_fee_usdc > gross_return_usdc {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+
+    let account_iter = &mut accounts.iter();
+    let session = next_account_info(account_iter)?;
+    let platform_relayer = next_account_info(account_iter)?;
+    let owner = next_account_info(account_iter)?;
+    let wallet = next_account_info(account_iter)?;
+    let strategy = next_account_info(account_iter)?;
+    let vault_authority = next_account_info(account_iter)?;
+    let owner_usdc = next_account_info(account_iter)?;
+    let strategy_usdc = next_account_info(account_iter)?;
+    let treasury_usdc = next_account_info(account_iter)?;
+    let relay_receipt = next_account_info(account_iter)?;
+    let relay_pending_sell = next_account_info(account_iter)?;
+    let usdc_mint = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    let system_program_account = next_account_info(account_iter)?;
+
+    if !session.is_signer {
+        return Err(StrategySpendError::MissingSignature.into());
+    }
+
+    let wallet_config = load_wallet(program_id, owner.key, wallet)?;
+    assert_platform_relayer(platform_relayer, &wallet_config)?;
+    let mut strategy_state = load_strategy(program_id, strategy)?;
+    assert_active_strategy(&strategy_state, session.key)?;
+    if strategy_state.owner != *owner.key {
+        return Err(StrategySpendError::OwnerMismatch.into());
+    }
+    assert_relay_intent(&strategy_state, nonce, deadline)?;
+
+    assert_system_program(system_program_account)?;
+    assert_token_program(token_program, &wallet_config)?;
+    if usdc_mint.key != &wallet_config.usdc_mint {
+        return Err(StrategySpendError::MintMismatch.into());
+    }
+
+    let (expected_vault_authority, vault_bump) =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
+    if vault_authority.key != &expected_vault_authority || strategy_state.vault_bump != vault_bump {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    assert_strategy_vault(
+        strategy_usdc,
+        vault_authority.key,
+        usdc_mint.key,
+        token_program.key,
+    )?;
+
+    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
+    if owner_usdc.key != &owner_usdc_expected {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    assert_usdc_account(owner_usdc, owner.key, &wallet_config.usdc_mint)?;
+
+    if cost_released_usdc > strategy_state.deployed_usdc {
+        return Err(StrategySpendError::CapacityExceeded.into());
+    }
+
+    let net_return = gross_return_usdc
+        .checked_sub(platform_fee_usdc)
+        .ok_or(StrategySpendError::Overflow)?;
+    let return_atomic = scale_to_mint_atomic(net_return, usdc_mint)?;
+    transfer_from_vault(
+        token_program,
+        strategy_usdc,
+        usdc_mint,
+        owner_usdc,
+        vault_authority,
+        strategy,
+        vault_bump,
+        return_atomic,
+    )?;
+
+    if platform_fee_usdc > 0 {
+        let fee_atomic = scale_to_mint_atomic(platform_fee_usdc, usdc_mint)?;
+        transfer_from_vault(
+            token_program,
+            strategy_usdc,
+            usdc_mint,
+            treasury_usdc,
+            vault_authority,
+            strategy,
+            vault_bump,
+            fee_atomic,
+        )?;
+        strategy_state.capacity_usdc = strategy_state
+            .capacity_usdc
+            .checked_sub(platform_fee_usdc)
+            .ok_or(StrategySpendError::Overflow)?;
+    }
+
+    let realized_pnl = i128::from(gross_return_usdc)
+        .checked_sub(i128::from(cost_released_usdc))
+        .ok_or(StrategySpendError::Overflow)?;
+    let realized_pnl = i64::try_from(realized_pnl).map_err(|_| StrategySpendError::Overflow)?;
+    strategy_state.capacity_usdc = apply_realized_pnl(
+        strategy_state.capacity_usdc,
+        strategy_state.limit_usdc,
+        realized_pnl,
+    )?;
+    strategy_state.deployed_usdc = strategy_state
+        .deployed_usdc
+        .checked_sub(cost_released_usdc)
+        .ok_or(StrategySpendError::Overflow)?;
+
+    require_relay_pending_sell(
+        relay_pending_sell,
+        program_id,
+        strategy.key,
+        &strategy_state.strategy_id,
+        &relay_order_id,
+        funding_chain_id,
+        quantity_released,
+        cost_released_usdc,
+    )?;
+    consume_relay_receipt(
+        relay_receipt,
+        strategy,
+        &relay_order_id,
+        RELAY_ACTION_USDC_RETURN,
+        program_id,
+        platform_relayer,
+        system_program_account,
+    )?;
+    close_relay_pending_sell(relay_pending_sell, platform_relayer)?;
+    bump_nonce(&mut strategy_state)?;
+    strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn release_relay_deposit(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    relay_order_id: [u8; 32],
+    refund_amount_usdc: u64,
+    locked_cost_usdc: u64,
+    nonce: u64,
+    deadline: i64,
+) -> ProgramResult {
+    if refund_amount_usdc == 0 || locked_cost_usdc == 0 {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+
+    let account_iter = &mut accounts.iter();
+    let session = next_account_info(account_iter)?;
+    let platform_relayer = next_account_info(account_iter)?;
+    let owner = next_account_info(account_iter)?;
+    let wallet = next_account_info(account_iter)?;
+    let strategy = next_account_info(account_iter)?;
+    let vault_authority = next_account_info(account_iter)?;
+    let owner_usdc = next_account_info(account_iter)?;
+    let strategy_usdc = next_account_info(account_iter)?;
+    let relay_receipt = next_account_info(account_iter)?;
+    let relay_pending_deposit = next_account_info(account_iter)?;
+    let usdc_mint = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    let system_program_account = next_account_info(account_iter)?;
+
+    if !session.is_signer {
+        return Err(StrategySpendError::MissingSignature.into());
+    }
+
+    let wallet_config = load_wallet(program_id, owner.key, wallet)?;
+    assert_platform_relayer(platform_relayer, &wallet_config)?;
+    let mut strategy_state = load_strategy(program_id, strategy)?;
+    assert_active_strategy(&strategy_state, session.key)?;
+    if strategy_state.owner != *owner.key {
+        return Err(StrategySpendError::OwnerMismatch.into());
+    }
+    assert_relay_intent(&strategy_state, nonce, deadline)?;
+
+    assert_system_program(system_program_account)?;
+    assert_token_program(token_program, &wallet_config)?;
+    if usdc_mint.key != &wallet_config.usdc_mint {
+        return Err(StrategySpendError::MintMismatch.into());
+    }
+
+    let (expected_pending, _) =
+        relay_pending_deposit_pda(program_id, strategy.key, &relay_order_id);
+    if relay_pending_deposit.key != &expected_pending {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    let pending = load_relay_pending_deposit(relay_pending_deposit)?;
+    if pending.strategy_id != strategy_state.strategy_id
+        || pending.locked_cost_usdc != locked_cost_usdc
+        || pending.origin_amount != refund_amount_usdc
+    {
+        return Err(StrategySpendError::PendingRecordMissing.into());
+    }
+
+    let (expected_vault_authority, vault_bump) =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
+    if vault_authority.key != &expected_vault_authority || strategy_state.vault_bump != vault_bump {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    assert_strategy_vault(
+        strategy_usdc,
+        vault_authority.key,
+        usdc_mint.key,
+        token_program.key,
+    )?;
+
+    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
+    if owner_usdc.key != &owner_usdc_expected {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    assert_usdc_account(owner_usdc, owner.key, &wallet_config.usdc_mint)?;
+
+    if locked_cost_usdc > strategy_state.deployed_usdc {
+        return Err(StrategySpendError::CapacityExceeded.into());
+    }
+
+    let refund_atomic = scale_to_mint_atomic(refund_amount_usdc, usdc_mint)?;
+    transfer_from_vault(
+        token_program,
+        strategy_usdc,
+        usdc_mint,
+        owner_usdc,
+        vault_authority,
+        strategy,
+        vault_bump,
+        refund_atomic,
+    )?;
+
+    strategy_state.deployed_usdc = strategy_state
+        .deployed_usdc
+        .checked_sub(locked_cost_usdc)
+        .ok_or(StrategySpendError::Overflow)?;
+
+    consume_relay_receipt(
+        relay_receipt,
+        strategy,
+        &relay_order_id,
+        RELAY_ACTION_DEPOSIT_RELEASE,
+        program_id,
+        platform_relayer,
+        system_program_account,
+    )?;
+    close_relay_pending_deposit(relay_pending_deposit, platform_relayer)?;
+    bump_nonce(&mut strategy_state)?;
+    strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_relay_gas_top_up(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    relay_order_id: [u8; 32],
+    overhead_usdc: u64,
+    gas_recipient: Pubkey,
+    nonce: u64,
+    deadline: i64,
+    relay_ix_data: Vec<u8>,
+) -> ProgramResult {
+    if overhead_usdc == 0 {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+
+    let account_iter = &mut accounts.iter();
+    let session = next_account_info(account_iter)?;
+    let platform_relayer = next_account_info(account_iter)?;
+    let owner = next_account_info(account_iter)?;
+    let wallet = next_account_info(account_iter)?;
+    let strategy = next_account_info(account_iter)?;
+    let vault_authority = next_account_info(account_iter)?;
+    let owner_usdc = next_account_info(account_iter)?;
+    let strategy_usdc = next_account_info(account_iter)?;
+    let program_authority = next_account_info(account_iter)?;
+    let relay_receipt = next_account_info(account_iter)?;
+    let relay_pending_gas = next_account_info(account_iter)?;
+    let usdc_mint = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    let associated_token_program = next_account_info(account_iter)?;
+    let system_program_account = next_account_info(account_iter)?;
+    let relay_depository = next_account_info(account_iter)?;
+
+    if !session.is_signer {
+        return Err(StrategySpendError::MissingSignature.into());
+    }
+
+    let wallet_config = load_wallet(program_id, owner.key, wallet)?;
+    assert_platform_relayer(platform_relayer, &wallet_config)?;
+    let mut strategy_state = load_strategy(program_id, strategy)?;
+    assert_active_strategy(&strategy_state, session.key)?;
+    if strategy_state.owner != *owner.key {
+        return Err(StrategySpendError::OwnerMismatch.into());
+    }
+    assert_relay_intent(&strategy_state, nonce, deadline)?;
+
+    assert_system_program(system_program_account)?;
+    assert_token_program(token_program, &wallet_config)?;
+    assert_associated_token_program(associated_token_program, &wallet_config)?;
+
+    let (expected_authority, authority_bump) =
+        Pubkey::find_program_address(&[AUTHORITY_SEED, owner.key.as_ref()], program_id);
+    if program_authority.key != &expected_authority
+        || wallet_config.authority_bump != authority_bump
+    {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    let (expected_vault_authority, vault_bump) =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
+    if vault_authority.key != &expected_vault_authority || strategy_state.vault_bump != vault_bump {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    if usdc_mint.key != &wallet_config.usdc_mint {
+        return Err(StrategySpendError::MintMismatch.into());
+    }
+
+    ensure_vault_ata(
+        platform_relayer,
+        strategy_usdc,
+        vault_authority,
+        usdc_mint,
+        token_program,
+        associated_token_program,
+        system_program_account,
+    )?;
+
+    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
+    if owner_usdc.key != &owner_usdc_expected {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    let deployable = strategy_state
+        .capacity_usdc
+        .checked_sub(strategy_state.deployed_usdc)
+        .ok_or(StrategySpendError::CapacityExceeded)?;
+    if overhead_usdc > deployable {
+        return Err(StrategySpendError::CapacityExceeded.into());
+    }
+
+    let overhead_atomic = scale_to_mint_atomic(overhead_usdc, usdc_mint)?;
+    invoke_signed(
+        &token_instruction::transfer_checked(
+            token_program.key,
+            owner_usdc.key,
+            usdc_mint.key,
+            strategy_usdc.key,
+            program_authority.key,
+            &[],
+            overhead_atomic,
+            mint_decimals(usdc_mint)?,
+        )?,
+        &[
+            owner_usdc.clone(),
+            usdc_mint.clone(),
+            strategy_usdc.clone(),
+            program_authority.clone(),
+            token_program.clone(),
+        ],
+        &[&[AUTHORITY_SEED, owner.key.as_ref(), &[authority_bump]]],
+    )?;
+
+    strategy_state.capacity_usdc = strategy_state
+        .capacity_usdc
+        .checked_sub(overhead_usdc)
+        .ok_or(StrategySpendError::Overflow)?;
+
+    let (expected_pending, pending_bump) = Pubkey::find_program_address(
+        &[
+            b"relay-pending-gas",
+            strategy.key.as_ref(),
+            relay_order_id.as_ref(),
+        ],
+        program_id,
+    );
+    if relay_pending_gas.key != &expected_pending {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    create_pda(
+        platform_relayer,
+        relay_pending_gas,
+        system_program_account,
+        program_id,
+        RelayPendingGasTopUp::LEN,
+        &[
+            b"relay-pending-gas",
+            strategy.key.as_ref(),
+            relay_order_id.as_ref(),
+            &[pending_bump],
+        ],
+    )?;
+    RelayPendingGasTopUp {
+        strategy_id: strategy_state.strategy_id,
+        overhead_usdc,
+        gas_recipient,
+        bump: pending_bump,
+    }
+    .serialize(&mut &mut relay_pending_gas.data.borrow_mut()[..])?;
+
+    let remaining_accounts = account_iter.cloned().collect::<Vec<_>>();
+    cpi_relay_depository(
+        &wallet_config,
+        relay_depository,
+        &relay_ix_data,
+        &remaining_accounts,
+        vault_authority,
+        strategy.key,
+        vault_bump,
+        &[],
+        &[platform_relayer.key],
+    )?;
+
+    consume_relay_receipt(
+        relay_receipt,
+        strategy,
+        &relay_order_id,
+        RELAY_ACTION_GAS_TOP_UP,
+        program_id,
+        platform_relayer,
+        system_program_account,
+    )?;
+    bump_nonce(&mut strategy_state)?;
+    strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+fn release_relay_gas_top_up(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    relay_order_id: [u8; 32],
+    refund_usdc: u64,
+    nonce: u64,
+    deadline: i64,
+) -> ProgramResult {
+    if refund_usdc == 0 {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+
+    let account_iter = &mut accounts.iter();
+    let session = next_account_info(account_iter)?;
+    let platform_relayer = next_account_info(account_iter)?;
+    let owner = next_account_info(account_iter)?;
+    let wallet = next_account_info(account_iter)?;
+    let strategy = next_account_info(account_iter)?;
+    let relay_receipt = next_account_info(account_iter)?;
+    let relay_pending_gas = next_account_info(account_iter)?;
+    let system_program_account = next_account_info(account_iter)?;
+
+    if !session.is_signer {
+        return Err(StrategySpendError::MissingSignature.into());
+    }
+
+    let wallet_config = load_wallet(program_id, owner.key, wallet)?;
+    assert_platform_relayer(platform_relayer, &wallet_config)?;
+    let mut strategy_state = load_strategy(program_id, strategy)?;
+    assert_active_strategy(&strategy_state, session.key)?;
+    if strategy_state.owner != *owner.key {
+        return Err(StrategySpendError::OwnerMismatch.into());
+    }
+    assert_relay_intent(&strategy_state, nonce, deadline)?;
+    assert_system_program(system_program_account)?;
+
+    let (expected_pending, _) = Pubkey::find_program_address(
+        &[
+            b"relay-pending-gas",
+            strategy.key.as_ref(),
+            relay_order_id.as_ref(),
+        ],
+        program_id,
+    );
+    if relay_pending_gas.key != &expected_pending {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    let pending = RelayPendingGasTopUp::try_from_slice(&relay_pending_gas.data.borrow())
+        .map_err(|_| StrategySpendError::InvalidAccount)?;
+    if pending.strategy_id != strategy_state.strategy_id || pending.overhead_usdc != refund_usdc {
+        return Err(StrategySpendError::PendingRecordMissing.into());
+    }
+
+    strategy_state.capacity_usdc = strategy_state
+        .capacity_usdc
+        .checked_add(refund_usdc)
+        .ok_or(StrategySpendError::Overflow)?;
+
+    consume_relay_receipt(
+        relay_receipt,
+        strategy,
+        &relay_order_id,
+        RELAY_ACTION_GAS_TOP_UP_RELEASE,
+        program_id,
+        platform_relayer,
+        system_program_account,
+    )?;
+    close_relay_pending_deposit(relay_pending_gas, platform_relayer)?;
+    bump_nonce(&mut strategy_state)?;
+    strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_remote_relay_asset(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    relay_order_id: [u8; 32],
+    funding_chain_id: u64,
+    restore_quantity: u64,
+    restore_cost_usdc: u64,
+    nonce: u64,
+    deadline: i64,
+) -> ProgramResult {
+    if restore_quantity == 0 || restore_cost_usdc == 0 {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+
+    let account_iter = &mut accounts.iter();
+    let session = next_account_info(account_iter)?;
+    let platform_relayer = next_account_info(account_iter)?;
+    let owner = next_account_info(account_iter)?;
+    let wallet = next_account_info(account_iter)?;
+    let strategy = next_account_info(account_iter)?;
+    let vault_authority = next_account_info(account_iter)?;
+    let strategy_token_vault = next_account_info(account_iter)?;
+    let token_mint = next_account_info(account_iter)?;
+    let remote_asset = next_account_info(account_iter)?;
+    let remote_aggregate = next_account_info(account_iter)?;
+    let relay_receipt = next_account_info(account_iter)?;
+    let relay_pending_sell = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    let system_program_account = next_account_info(account_iter)?;
+
+    if !session.is_signer {
+        return Err(StrategySpendError::MissingSignature.into());
+    }
+
+    let wallet_config = load_wallet(program_id, owner.key, wallet)?;
+    assert_platform_relayer(platform_relayer, &wallet_config)?;
+    let mut strategy_state = load_strategy(program_id, strategy)?;
+    assert_active_strategy(&strategy_state, session.key)?;
+    if strategy_state.owner != *owner.key {
+        return Err(StrategySpendError::OwnerMismatch.into());
+    }
+    assert_relay_intent(&strategy_state, nonce, deadline)?;
+    assert_system_program(system_program_account)?;
+    assert_token_program(token_program, &wallet_config)?;
+
+    let (expected_vault_authority, _) =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
+    if vault_authority.key != &expected_vault_authority {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    assert_strategy_vault(
+        strategy_token_vault,
+        vault_authority.key,
+        token_mint.key,
+        token_program.key,
+    )?;
+
+    let (expected_remote_asset, remote_asset_bump) =
+        remote_asset_pda(program_id, strategy.key, token_mint.key, funding_chain_id);
+    if remote_asset.key != &expected_remote_asset {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    let (expected_aggregate, aggregate_bump) =
+        remote_aggregate_pda(program_id, strategy.key, token_mint.key);
+    if remote_aggregate.key != &expected_aggregate {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+
+    ensure_remote_aggregate(
+        remote_aggregate,
+        strategy,
+        token_mint,
+        program_id,
+        platform_relayer,
+        system_program_account,
+        aggregate_bump,
+    )?;
+    ensure_remote_asset(
+        remote_asset,
+        strategy,
+        token_mint,
+        funding_chain_id,
+        program_id,
+        platform_relayer,
+        system_program_account,
+        remote_asset_bump,
+    )?;
+
+    let mut aggregate = load_remote_aggregate(remote_aggregate)?;
+    let surplus = vault_token_surplus(strategy_token_vault, &aggregate)?;
+    if surplus < restore_quantity {
+        return Err(StrategySpendError::InsufficientVaultSurplus.into());
+    }
+
+    let mut remote = load_remote_asset(remote_asset)?;
+    if remote.funding_chain_id != funding_chain_id {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    remote.quantity = remote
+        .quantity
+        .checked_add(restore_quantity)
+        .ok_or(StrategySpendError::Overflow)?;
+    remote.cost_usdc = remote
+        .cost_usdc
+        .checked_add(restore_cost_usdc)
+        .ok_or(StrategySpendError::Overflow)?;
+    remote.serialize(&mut &mut remote_asset.data.borrow_mut()[..])?;
+
+    aggregate.total_accounted = aggregate
+        .total_accounted
+        .checked_add(restore_quantity)
+        .ok_or(StrategySpendError::Overflow)?;
+    aggregate.serialize(&mut &mut remote_aggregate.data.borrow_mut()[..])?;
+
+    require_relay_pending_sell(
+        relay_pending_sell,
+        program_id,
+        strategy.key,
+        &strategy_state.strategy_id,
+        &relay_order_id,
+        funding_chain_id,
+        restore_quantity,
+        restore_cost_usdc,
+    )?;
+    consume_relay_receipt(
+        relay_receipt,
+        strategy,
+        &relay_order_id,
+        RELAY_ACTION_ASSET_RESTORE,
+        program_id,
+        platform_relayer,
+        system_program_account,
+    )?;
+    close_relay_pending_sell(relay_pending_sell, platform_relayer)?;
+    bump_nonce(&mut strategy_state)?;
+    strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
+    Ok(())
+}
+
 fn withdraw_asset(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> ProgramResult {
     if amount == 0 {
         return Err(StrategySpendError::InvalidInstruction.into());
@@ -2005,9 +3355,6 @@ fn load_wallet<'a>(
     }
     let config = WalletConfig::try_from_slice(&wallet.data.borrow())
         .map_err(|_| StrategySpendError::InvalidAccount)?;
-    if config.version != WALLET_CONFIG_VERSION {
-        return Err(StrategySpendError::InvalidAccount.into());
-    }
     Ok(config)
 }
 
@@ -2129,9 +3476,7 @@ fn assert_associated_token_program(
     associated_token_program: &AccountInfo,
     wallet: &WalletConfig,
 ) -> ProgramResult {
-    if associated_token_program.key != &ASSOCIATED_TOKEN_PROGRAM_ID
-        || wallet.associated_token_program != ASSOCIATED_TOKEN_PROGRAM_ID
-    {
+    if associated_token_program.key != &wallet.ata_program {
         return Err(StrategySpendError::ProgramMismatch.into());
     }
     Ok(())

@@ -203,7 +203,9 @@ the bootstrapped release hash.
 
 `upgrade` skips unchanged artifacts. Changed EVM bytecode deploys to a new implementation
 address, so applications must update their implementation configuration and wallet owners
-must re-delegate EIP-7702. Changed Solana bytecode upgrades the existing program ID while
+must re-delegate EIP-7702. The SessionSpend7702 constructor also deploys `SessionSpendRelay`
+and `SessionSpendSwap` modules; the 7702 runtime delegatecalls them so each created contract
+stays under the 24,576-byte EIP-170 limit. Changed Solana bytecode upgrades the existing program ID while
 its upgrade authority exists. An immutable Solana program rejects upgrades and requires a
 new program ID. Superseded public deployments remain in each target's `releases` history.
 
@@ -213,9 +215,30 @@ mainnet deployment, with the exact `UPGRADE POCKLESS MAINNET` confirmation phras
 ### User delegation (EIP-7702)
 
 Owners delegate their **EOA** to the implementation address (wallet UX varies). Admin
-functions (`grant`, `revoke`, `setLimit`, `rotateSession`) execute as self-calls on the
-delegated EOA. Swaps use `executeSwap` with a session-signed EIP-712 intent; any funded
-relayer may submit.
+functions (`grant`, `revoke`, `setLimit`, `rotateSession`, `setPlatformRelayer`) execute as
+self-calls on the delegated EOA. Swaps use `executeSwap` with a session-signed EIP-712 intent;
+Relay finalization and gas-top-up paths require the configured **platform relayer** signer.
+
+Grant preparation compares on-chain `platformRelayer()` to the backend `EVM_RELAYER_PRIVATE_KEY`
+address and, when they differ, includes owner-signed `setPlatformRelayer` before session grant
+calls. Relay deposit/sell/finalization and gas-top-up instructions are `onlyPlatformRelayer`.
+
+### Relay pending records and gas top-up
+
+Cross-chain Relay actions create durable pending state keyed by `relayOrderId`:
+
+| Family | Pending storage | Release / finalization |
+| --- | --- | --- |
+| EVM | `pendingDeposits`, `pendingSells`, `pendingGasTopUps` mappings on the delegated EOA | Matching pending record required; missing record reverts `PendingRecordMissing` |
+| Solana | `RelayPendingDeposit`, `RelayPendingSell`, `RelayPendingGasTopUp` PDAs | Closed by the corresponding finalization or release instruction |
+
+Gas top-up when funding and origin chains differ:
+
+- **EVM:** session-signed `executeRelayGasTopUp` debits strategy overhead USDC, stores
+  `PendingGasTopUp`, and CPI-calls Relay; `releaseRelayGasTopUp` restores capacity on refund.
+- **Solana:** session-signed `ExecuteRelayGasTopUp` / `ReleaseRelayGasTopUp` with the same
+  pending-PDA pattern. Solana `InitWallet` records `platform_relayer` (and Relay depository)
+  in the wallet config PDA; EVM updates it via `setPlatformRelayer`.
 
 ## Solana — strategy-spend
 
@@ -249,7 +272,8 @@ to the one deployer check. The default conservative authority minimum and verifi
 polling timeout can be adjusted with the documented `SOLANA_VERIFY_*` variables in
 `deploy/.env.example`.
 
-Per wallet, owners run `InitWallet` once, then `InitStrategy` per strategy id.
+Per wallet, owners run `InitWallet` once (passing Relay depository and platform relayer
+accounts), then `InitStrategy` per strategy id.
 
 ## deployments.json
 

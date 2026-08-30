@@ -26,42 +26,12 @@ pub enum StrategySpendInstruction {
     RotateSession { new_session: Pubkey },
     /// Owner or session revokes the strategy.
     Revoke,
-    /// Session executes one pinned Jupiter swap through program-controlled vaults.
-    /// `usdc_amount` is the maximum input on buys and minimum output on sells.
-    /// `token_amount` is the minimum output on buys and maximum input on sells.
-    ExecuteSwap {
-        is_buy: bool,
-        usdc_amount: u64,
-        token_amount: u64,
-        jupiter_data: Vec<u8>,
-    },
-    /// Session executes platform fee, gas reimbursement, and one pinned Jupiter swap atomically.
-    /// `gas_jupiter_data` is `[gas_jupiter_account_count: u8][jupiter_ix_data…]`.
-    /// Fee and gas amounts reduce `capacity_usdc`, not `deployed_usdc`.
-    ExecuteSwapWithFees {
-        is_buy: bool,
-        usdc_amount: u64,
-        token_amount: u64,
-        platform_fee_usdc: u64,
-        gas_reimburse_usdc: u64,
-        min_native_out: u64,
-        treasury: Pubkey,
-        jupiter_data: Vec<u8>,
-        gas_jupiter_data: Vec<u8>,
-    },
     /// Owner withdraws tokens from the strategy vault.
     WithdrawAsset { amount: u64 },
     /// Owner closes the strategy after all positions are flat.
     CloseStrategy,
-    /// V2 fee-aware swap with explicit gas handling. `CreditOnly` consumes no
-    /// USDC because its native gas was funded by an earlier verified top-up.
-    ///
-    /// `usdc_amount` is always the strategy notional. In `NativeOutput` mode Jupiter's
-    /// USDC input is `usdc_amount + gas_top_up_usdc`, `native_amount` is split from the
-    /// WSOL output, and only the remainder is recorded as strategy inventory.
-    /// `gas_jupiter_data` is `[gas_jupiter_account_count: u8][jupiter_ix_data…]` in
-    /// `Separate` mode and empty in every other mode.
-    ExecuteSwapWithFeesV2 {
+    /// Session executes platform fee, gas handling, and one pinned Jupiter swap atomically.
+    ExecuteSwapWithFees {
         is_buy: bool,
         usdc_amount: u64,
         token_amount: u64,
@@ -73,5 +43,82 @@ pub enum StrategySpendInstruction {
         gas_recipient: Pubkey,
         jupiter_data: Vec<u8>,
         gas_jupiter_data: Vec<u8>,
+    },
+    /// Origin-chain Relay deposit: lock deployed cost and CPI to Relay Depository.
+    ExecuteRelayDeposit {
+        relay_order_id: [u8; 32],
+        funding_chain_id: u64,
+        amount: u64,
+        min_dest_amount: u64,
+        locked_cost_usdc: u64,
+        platform_fee_usdc: u64,
+        nonce: u64,
+        deadline: i64,
+        relay_ix_data: Vec<u8>,
+    },
+    /// Destination-chain credit of Relay-delivered remote inventory.
+    CreditRelayAsset {
+        relay_order_id: [u8; 32],
+        funding_chain_id: u64,
+        credit_quantity: u64,
+        cost_usdc: u64,
+        min_credit_qty: u64,
+        max_credit_qty: u64,
+        nonce: u64,
+        deadline: i64,
+    },
+    /// Destination-chain remote Relay sell consuming recorded inventory.
+    ExecuteRemoteRelaySell {
+        relay_order_id: [u8; 32],
+        funding_chain_id: u64,
+        sell_quantity: u64,
+        min_return_usdc: u64,
+        nonce: u64,
+        deadline: i64,
+        relay_ix_data: Vec<u8>,
+    },
+    /// Funding-chain credit of verified USDC return from a remote sell.
+    CreditUsdcReturn {
+        relay_order_id: [u8; 32],
+        funding_chain_id: u64,
+        gross_return_usdc: u64,
+        quantity_released: u64,
+        cost_released_usdc: u64,
+        platform_fee_usdc: u64,
+        nonce: u64,
+        deadline: i64,
+    },
+    /// Funding-chain release of a refunded Relay deposit lock.
+    ReleaseRelayDeposit {
+        relay_order_id: [u8; 32],
+        refund_amount_usdc: u64,
+        locked_cost_usdc: u64,
+        nonce: u64,
+        deadline: i64,
+    },
+    /// Destination-chain restoration of remote inventory after a sell refund.
+    RestoreRemoteRelayAsset {
+        relay_order_id: [u8; 32],
+        funding_chain_id: u64,
+        restore_quantity: u64,
+        restore_cost_usdc: u64,
+        nonce: u64,
+        deadline: i64,
+    },
+    /// Funding-chain Relay gas top-up debiting strategy overhead without deployed lock.
+    ExecuteRelayGasTopUp {
+        relay_order_id: [u8; 32],
+        overhead_usdc: u64,
+        gas_recipient: Pubkey,
+        nonce: u64,
+        deadline: i64,
+        relay_ix_data: Vec<u8>,
+    },
+    /// Funding-chain release of a refunded Relay gas top-up overhead reservation.
+    ReleaseRelayGasTopUp {
+        relay_order_id: [u8; 32],
+        refund_usdc: u64,
+        nonce: u64,
+        deadline: i64,
     },
 }

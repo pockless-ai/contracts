@@ -376,6 +376,8 @@ impl TestHarness {
                 AccountMeta::new(wallet_pda(&self.program_id, &self.owner.pubkey()), false),
                 AccountMeta::new_readonly(self.usdc_mint, false),
                 AccountMeta::new_readonly(self.jupiter_program, false),
+                AccountMeta::new_readonly(Pubkey::new_unique(), false),
+                AccountMeta::new_readonly(self.relayer.pubkey(), false),
                 AccountMeta::new_readonly(system_program::id(), false),
             ],
             data: StrategySpendInstruction::InitWallet.try_to_vec().unwrap(),
@@ -488,101 +490,19 @@ impl TestHarness {
         }
     }
 
-    fn execute_swap_ix(
-        &self,
-        is_buy: bool,
-        usdc_amount: u64,
-        token_amount: u64,
-        actual_input: u64,
-        actual_output: u64,
-    ) -> Instruction {
-        let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
-        let vault_authority =
-            Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &self.program_id).0;
-        let program_authority = Pubkey::find_program_address(
-            &[AUTHORITY_SEED, self.owner.pubkey().as_ref()],
-            &self.program_id,
-        )
-        .0;
-        let owner_usdc = get_associated_token_address(&self.owner.pubkey(), &self.usdc_mint);
-        let strategy_usdc = get_associated_token_address(&vault_authority, &self.usdc_mint);
-        let strategy_token = get_associated_token_address(&vault_authority, &self.token_mint);
-        let asset = Pubkey::find_program_address(
-            &[ASSET_SEED, strategy.as_ref(), self.token_mint.as_ref()],
-            &self.program_id,
-        )
-        .0;
-        let (source, destination, input_mint, output_mint) = if is_buy {
-            (
-                strategy_usdc,
-                strategy_token,
-                self.usdc_mint,
-                self.token_mint,
-            )
-        } else {
-            (
-                strategy_token,
-                strategy_usdc,
-                self.token_mint,
-                self.usdc_mint,
-            )
-        };
-        let mut jupiter_data = actual_input.to_le_bytes().to_vec();
-        jupiter_data.extend_from_slice(&actual_output.to_le_bytes());
-
-        Instruction {
-            program_id: self.program_id,
-            accounts: vec![
-                AccountMeta::new_readonly(self.session.pubkey(), true),
-                AccountMeta::new(self.relayer.pubkey(), true),
-                AccountMeta::new_readonly(self.owner.pubkey(), false),
-                AccountMeta::new_readonly(
-                    wallet_pda(&self.program_id, &self.owner.pubkey()),
-                    false,
-                ),
-                AccountMeta::new(strategy, false),
-                AccountMeta::new_readonly(vault_authority, false),
-                AccountMeta::new(owner_usdc, false),
-                AccountMeta::new(strategy_usdc, false),
-                AccountMeta::new(strategy_token, false),
-                AccountMeta::new(asset, false),
-                AccountMeta::new_readonly(self.token_mint, false),
-                AccountMeta::new_readonly(self.usdc_mint, false),
-                AccountMeta::new_readonly(spl_token::id(), false),
-                AccountMeta::new_readonly(spl_associated_token_account::id(), false),
-                AccountMeta::new_readonly(system_program::id(), false),
-                AccountMeta::new_readonly(program_authority, false),
-                AccountMeta::new_readonly(self.jupiter_program, false),
-                AccountMeta::new_readonly(vault_authority, false),
-                AccountMeta::new(source, false),
-                AccountMeta::new(destination, false),
-                AccountMeta::new(input_mint, false),
-                AccountMeta::new(output_mint, false),
-                AccountMeta::new_readonly(spl_token::id(), false),
-            ],
-            data: StrategySpendInstruction::ExecuteSwap {
-                is_buy,
-                usdc_amount,
-                token_amount,
-                jupiter_data,
-            }
-            .try_to_vec()
-            .unwrap(),
-        }
-    }
-
     fn execute_swap_with_fees_ix(
         &self,
         is_buy: bool,
         usdc_amount: u64,
         token_amount: u64,
         platform_fee_usdc: u64,
-        gas_reimburse_usdc: u64,
+        gas_mode: GasMode,
+        gas_top_up_usdc: u64,
+        native_amount: u64,
         actual_input: u64,
         actual_output: u64,
         gas_input: u64,
         gas_lamports_out: u64,
-        min_native_out: u64,
     ) -> Instruction {
         let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
         let vault_authority =
@@ -620,12 +540,13 @@ impl TestHarness {
         jupiter_data.extend_from_slice(&actual_output.to_le_bytes());
         let mut gas_jupiter_data = gas_input.to_le_bytes().to_vec();
         gas_jupiter_data.extend_from_slice(&gas_lamports_out.to_le_bytes());
-        let gas_account_count = if gas_reimburse_usdc > 0 { 7u8 } else { 0u8 };
-        let mut gas_payload = Vec::new();
-        if gas_reimburse_usdc > 0 {
-            gas_payload.push(gas_account_count);
-            gas_payload.extend_from_slice(&gas_jupiter_data);
-        }
+        let gas_payload = if gas_mode == GasMode::Separate {
+            let mut payload = vec![7u8];
+            payload.extend_from_slice(&gas_jupiter_data);
+            payload
+        } else {
+            vec![]
+        };
 
         let mut accounts = vec![
             AccountMeta::new_readonly(self.session.pubkey(), true),
@@ -646,7 +567,7 @@ impl TestHarness {
             AccountMeta::new_readonly(system_program::id(), false),
             AccountMeta::new_readonly(program_authority, false),
             AccountMeta::new_readonly(self.jupiter_program, false),
-            if gas_reimburse_usdc > 0 {
+            if gas_mode == GasMode::Separate {
                 AccountMeta::new(
                     get_associated_token_address(&vault_authority, &spl_token::native_mint::id()),
                     false,
@@ -655,7 +576,7 @@ impl TestHarness {
                 AccountMeta::new(self.relayer.pubkey(), false)
             },
         ];
-        if gas_reimburse_usdc > 0 {
+        if gas_mode == GasMode::Separate {
             accounts.extend_from_slice(&[
                 AccountMeta::new_readonly(vault_authority, false),
                 AccountMeta::new(strategy_usdc, false),
@@ -686,9 +607,11 @@ impl TestHarness {
                 usdc_amount,
                 token_amount,
                 platform_fee_usdc,
-                gas_reimburse_usdc,
-                min_native_out,
+                gas_mode,
+                gas_top_up_usdc,
+                native_amount,
                 treasury: self.treasury.pubkey(),
+                gas_recipient: self.relayer.pubkey(),
                 jupiter_data,
                 gas_jupiter_data: gas_payload,
             }
@@ -708,67 +631,32 @@ impl TestHarness {
             200_000_000,
             90_000_000,
             1_000_000,
+            GasMode::Separate,
             500_000,
+            min_native_out,
             200_000_000,
             100_000_000,
             500_000,
             gas_lamports_out,
-            min_native_out,
         );
-        let mut jupiter_data = 200_000_000u64.to_le_bytes().to_vec();
-        jupiter_data.extend_from_slice(&100_000_000u64.to_le_bytes());
-        let mut gas_jupiter_data = vec![7];
-        gas_jupiter_data.extend_from_slice(&500_000u64.to_le_bytes());
-        gas_jupiter_data.extend_from_slice(&gas_lamports_out.to_le_bytes());
-        instruction.data = StrategySpendInstruction::ExecuteSwapWithFeesV2 {
-            is_buy: true,
-            usdc_amount: 200_000_000,
-            token_amount: 90_000_000,
-            platform_fee_usdc: 1_000_000,
-            gas_mode: GasMode::Separate,
-            gas_top_up_usdc: 500_000,
-            native_amount: min_native_out,
-            treasury: self.treasury.pubkey(),
-            gas_recipient,
-            jupiter_data,
-            gas_jupiter_data,
-        }
-        .try_to_vec()
-        .unwrap();
+        instruction.data[75..107].copy_from_slice(&gas_recipient.to_bytes());
         instruction
     }
 
     fn execute_swap_with_fees_v2_credit_only_ix(&self) -> Instruction {
-        let mut instruction = self.execute_swap_with_fees_ix(
+        self.execute_swap_with_fees_ix(
             true,
             200_000_000,
             90_000_000,
+            0,
+            GasMode::CreditOnly,
             0,
             0,
             200_000_000,
             100_000_000,
             0,
             0,
-            0,
-        );
-        let mut jupiter_data = 200_000_000u64.to_le_bytes().to_vec();
-        jupiter_data.extend_from_slice(&100_000_000u64.to_le_bytes());
-        instruction.data = StrategySpendInstruction::ExecuteSwapWithFeesV2 {
-            is_buy: true,
-            usdc_amount: 200_000_000,
-            token_amount: 90_000_000,
-            platform_fee_usdc: 0,
-            gas_mode: GasMode::CreditOnly,
-            gas_top_up_usdc: 0,
-            native_amount: 0,
-            treasury: self.treasury.pubkey(),
-            gas_recipient: self.relayer.pubkey(),
-            jupiter_data,
-            gas_jupiter_data: vec![],
-        }
-        .try_to_vec()
-        .unwrap();
-        instruction
+        )
     }
 
     fn execute_native_output_ix(
@@ -840,7 +728,7 @@ impl TestHarness {
                 AccountMeta::new(self.gas_funder, false),
                 AccountMeta::new_readonly(system_program::id(), false),
             ],
-            data: StrategySpendInstruction::ExecuteSwapWithFeesV2 {
+            data: StrategySpendInstruction::ExecuteSwapWithFees {
                 is_buy: true,
                 usdc_amount: 200_000_000,
                 token_amount: 90_000_000,
@@ -1050,7 +938,19 @@ async fn execute_buy_sell_and_recovery_use_measured_deltas() {
         &mut banks_client,
         &h.relayer,
         &[&h.relayer, &h.session],
-        h.execute_swap_ix(true, 200_000_000, 90_000_000, 200_000_000, 100_000_000),
+        h.execute_swap_with_fees_ix(
+            true,
+            200_000_000,
+            90_000_000,
+            0,
+            GasMode::None,
+            0,
+            0,
+            200_000_000,
+            100_000_000,
+            0,
+            0,
+        ),
     )
     .await
     .unwrap();
@@ -1073,7 +973,19 @@ async fn execute_buy_sell_and_recovery_use_measured_deltas() {
         &mut banks_client,
         &h.relayer,
         &[&h.relayer, &h.session],
-        h.execute_swap_ix(false, 75_000_000, 50_000_000, 50_000_000, 80_000_000),
+        h.execute_swap_with_fees_ix(
+            false,
+            75_000_000,
+            50_000_000,
+            0,
+            GasMode::None,
+            0,
+            0,
+            50_000_000,
+            80_000_000,
+            0,
+            0,
+        ),
     )
     .await
     .unwrap();
@@ -1120,6 +1032,7 @@ async fn revoke_marks_strategy_revoked() {
     .unwrap();
 
     assert!(h.read_strategy(&mut banks_client).await.revoked);
+    assert_eq!(h.read_strategy(&mut banks_client).await.nonce, 1);
 }
 
 #[tokio::test]
@@ -1147,7 +1060,7 @@ async fn rotate_session_bumps_nonce() {
 
     let state = h.read_strategy(&mut banks_client).await;
     assert_eq!(state.session, new_session.pubkey());
-    assert_eq!(state.nonce, 1);
+    assert_eq!(state.nonce, 2);
     assert!(!state.revoked);
 }
 
@@ -1189,11 +1102,12 @@ async fn execute_swap_with_fees_buy_charges_treasury_and_reduces_capacity() {
             200_000_000,
             90_000_000,
             1_000_000,
+            GasMode::Separate,
             500_000,
+            10_000_000,
             200_000_000,
             100_000_000,
             500_000,
-            10_000_000,
             10_000_000,
         ),
     )
@@ -1238,12 +1152,13 @@ async fn execute_swap_with_fees_rejects_gas_below_minimum_atomically() {
             200_000_000,
             90_000_000,
             0,
+            GasMode::Separate,
             500_000,
+            10_000_001,
             200_000_000,
             100_000_000,
             500_000,
             10_000_000,
-            10_000_001,
         ),
     )
     .await
@@ -1270,11 +1185,12 @@ async fn execute_swap_with_fees_buy_rejects_insufficient_deployable_for_fees() {
             LIMIT_USDC,
             90_000_000,
             1_000_000,
+            GasMode::Separate,
             500_000,
+            10_000_000,
             LIMIT_USDC,
             100_000_000,
             500_000,
-            10_000_000,
             10_000_000,
         ),
     )
@@ -1296,10 +1212,11 @@ async fn execute_swap_with_fees_sell_applies_fees_after_swap() {
             200_000_000,
             90_000_000,
             0,
+            GasMode::None,
+            0,
             0,
             200_000_000,
             100_000_000,
-            0,
             0,
             0,
         ),
@@ -1312,8 +1229,17 @@ async fn execute_swap_with_fees_sell_applies_fees_after_swap() {
         &h.relayer,
         &[&h.relayer, &h.session],
         h.execute_swap_with_fees_ix(
-            false, 75_000_000, 50_000_000, 1_000_000, 500_000, 50_000_000, 80_000_000, 500_000,
-            10_000_000, 10_000_000,
+            false,
+            75_000_000,
+            50_000_000,
+            1_000_000,
+            GasMode::Separate,
+            500_000,
+            10_000_000,
+            50_000_000,
+            80_000_000,
+            500_000,
+            10_000_000,
         ),
     )
     .await

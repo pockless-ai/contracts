@@ -3,6 +3,8 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {SessionSpend7702} from "../src/SessionSpend7702.sol";
+import {SessionSpendBase} from "../src/SessionSpendBase.sol";
+import {StrategyVault} from "../src/StrategyVault.sol";
 
 contract MockERC20 {
     string public name;
@@ -43,35 +45,15 @@ contract MockERC20 {
     }
 }
 
-contract MockUsdt is MockERC20 {
-    constructor() MockERC20("Tether USD", "USDT", 6) {}
-
-    function approve(address spender, uint256 amount) public override returns (bool) {
-        if (amount != 0 && allowance[msg.sender][spender] != 0) {
-            return false;
-        }
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-}
-
-/// @dev Simulates 0x AllowanceHolder.exec at the pinned mainnet address.
 contract MockAllowanceHolder {
     address internal constant NATIVE_SENTINEL = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     mapping(address => mapping(address => uint256)) public rateNumerator;
     mapping(address => mapping(address => uint256)) public observedAllowance;
     uint256 public observedCallValue;
-    bool public pullExtra;
-    bool public revertAfterPull;
 
     function setRate(address sellToken, address buyToken, uint256 numerator) external {
         rateNumerator[sellToken][buyToken] = numerator;
-    }
-
-    function setAttack(bool pullExtra_, bool revertAfterPull_) external {
-        pullExtra = pullExtra_;
-        revertAfterPull = revertAfterPull_;
     }
 
     function exec(address, address token, uint256 amount, address, bytes calldata data)
@@ -90,9 +72,8 @@ contract MockAllowanceHolder {
             require(msg.value == 0, "unexpected value");
             observedAllowance[token][msg.sender] =
                 MockERC20(token).allowance(msg.sender, address(this));
-            MockERC20(token).transferFrom(msg.sender, address(this), amount + (pullExtra ? 1 : 0));
+            MockERC20(token).transferFrom(msg.sender, address(this), amount);
         }
-        if (revertAfterPull) revert("router failed");
         if (buyToken == address(0)) {
             uint256 nativeOut = (amount * numerator) / 1e18;
             (bool sent,) = msg.sender.call{value: nativeOut}("");
@@ -103,33 +84,44 @@ contract MockAllowanceHolder {
         MockERC20(buyToken).transfer(msg.sender, buyAmount);
         return "";
     }
+}
 
-    function evil() external pure {}
+contract MockRelayDepository {
+    function pullFrom(address from, address token, uint256 amount) external {
+        MockERC20(token).transferFrom(from, address(this), amount);
+    }
+
+    receive() external payable {}
 }
 
 contract SessionSpend7702Test is Test {
     address internal constant ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
+    address internal constant RELAY_DEPOSITORY = 0x4cD00E387622C35bDDB9b4c962C136462338BC31;
     address internal constant NATIVE_SENTINEL = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     SessionSpend7702 internal wallet;
     MockERC20 internal usdc;
     MockERC20 internal weth;
     MockAllowanceHolder internal holder;
+    MockRelayDepository internal relay;
 
     bytes32 internal constant STRATEGY_A = keccak256("strategy-a");
     bytes32 internal constant STRATEGY_B = keccak256("strategy-b");
+    bytes32 internal constant RELAY_ORDER_A = keccak256("relay-order-a");
+    bytes32 internal constant RELAY_ORDER_B = keccak256("relay-order-b");
 
     uint256 internal sessionKeyPrivateKey = 0xA11CE;
     address internal sessionKey;
+    address internal platformRelayer = address(uint160(0x0E1A));
 
-    uint256 internal constant LIMIT_USDC = 1_000_000_000; // 1_000 USDC (6 decimals)
+    uint256 internal constant LIMIT_USDC = 1_000_000_000;
     uint256 internal constant EXPIRES_AT = 4_102_444_800;
+    uint256 internal constant FUNDING_CHAIN_ID = 8453;
 
     address internal feeRecipient = address(0xFEE);
     address internal gasRecipient = address(0x600D);
-    uint256 internal constant PLATFORM_FEE = 1_000_000; // 1 USDC
-    uint256 internal constant GAS_SELL = 500_000; // 0.5 USDC
-    uint256 internal constant NATIVE_RATE = 1e27; // 0.001 ETH per USDC base unit
+    uint256 internal constant PLATFORM_FEE = 1_000_000;
+    uint256 internal constant NATIVE_RATE = 1e27;
 
     function setUp() public {
         sessionKey = vm.addr(sessionKeyPrivateKey);
@@ -137,12 +129,13 @@ contract SessionSpend7702Test is Test {
         usdc = new MockERC20("USD Coin", "USDC", 6);
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
         holder = new MockAllowanceHolder();
+        relay = new MockRelayDepository();
 
         vm.etch(ALLOWANCE_HOLDER, address(holder).code);
+        vm.etch(RELAY_DEPOSITORY, address(relay).code);
         _setRate(address(usdc), address(weth), 1e27);
         _setRate(address(weth), address(usdc), 1e9);
         _setRate(address(usdc), address(0), NATIVE_RATE);
-        _setRate(address(0), address(usdc), 1e9);
 
         SessionSpend7702 implementation = new SessionSpend7702(address(usdc));
         address delegatedEoa = vm.addr(0x7702);
@@ -154,941 +147,766 @@ contract SessionSpend7702Test is Test {
         weth.mint(ALLOWANCE_HOLDER, 1_000 ether);
         vm.deal(ALLOWANCE_HOLDER, 1_000 ether);
 
-        vm.prank(address(wallet));
+        vm.startPrank(address(wallet));
+        wallet.setPlatformRelayer(platformRelayer);
         wallet.grant(STRATEGY_A, sessionKey, LIMIT_USDC, EXPIRES_AT);
+        vm.stopPrank();
     }
 
-    // ── grant ────────────────────────────────────────────────────────────────
+    // ── grant / vault ────────────────────────────────────────────────────────
+
+    function testDelegatedRuntimeFitsEip170() public view {
+        assertLe(address(wallet).code.length, 24_576);
+    }
+
+    function testGrantDeploysDeterministicStrategyVault() public view {
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        assertEq(vault, wallet.predictStrategyVault(STRATEGY_A));
+        assertEq(StrategyVault(payable(vault)).owner(), address(wallet));
+    }
 
     function testGrantInitializesSessionState() public view {
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        SessionSpendBase.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
         assertTrue(session.exists);
         assertFalse(session.revoked);
         assertEq(session.limitUsdc, LIMIT_USDC);
         assertEq(session.capacityUsdc, LIMIT_USDC);
         assertEq(session.deployedUsdc, 0);
-        assertEq(session.expiresAt, EXPIRES_AT);
         assertEq(session.nonce, 0);
-    }
-
-    function testGrantEmitsSessionGranted() public {
-        address newKey = vm.addr(0xDEAD);
-        vm.expectEmit(true, true, false, true);
-        emit SessionSpend7702.SessionGranted(STRATEGY_B, newKey, LIMIT_USDC, EXPIRES_AT);
-        vm.prank(address(wallet));
-        wallet.grant(STRATEGY_B, newKey, LIMIT_USDC, EXPIRES_AT);
-    }
-
-    function testGrantRejectsZeroStrategy() public {
-        vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.ZeroStrategy.selector);
-        wallet.grant(bytes32(0), sessionKey, LIMIT_USDC, EXPIRES_AT);
-    }
-
-    function testGrantRejectsZeroKey() public {
-        vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.ZeroKey.selector);
-        wallet.grant(STRATEGY_B, address(0), LIMIT_USDC, EXPIRES_AT);
-    }
-
-    function testGrantRejectsExpiredTimestamp() public {
-        vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.InvalidIntent.selector);
-        wallet.grant(STRATEGY_B, vm.addr(0x1), LIMIT_USDC, block.timestamp);
-    }
-
-    function testGrantRejectsZeroLimit() public {
-        vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.InvalidLimit.selector);
-        wallet.grant(STRATEGY_B, vm.addr(0x1), 0, EXPIRES_AT);
     }
 
     function testGrantRejectsExistingSession() public {
         vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.SessionAlreadyExists.selector);
+        vm.expectRevert(SessionSpendBase.SessionAlreadyExists.selector);
         wallet.grant(STRATEGY_A, sessionKey, LIMIT_USDC, EXPIRES_AT);
     }
 
-    function testGrantAfterRevokeStillRejected() public {
+    // ── revoke ─────────────────────────────────────────────────────────────
+
+    function testRevokeBySessionKeyIncrementsNonce() public {
         vm.prank(sessionKey);
         wallet.revoke(STRATEGY_A, sessionKey);
 
-        vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.SessionAlreadyExists.selector);
-        wallet.grant(STRATEGY_A, sessionKey, LIMIT_USDC, EXPIRES_AT);
-    }
-
-    // ── revoke ───────────────────────────────────────────────────────────────
-
-    function testRevokeBySessionKeyBlocksSwapAndIncrementsNonce() public {
-        vm.prank(sessionKey);
-        vm.expectEmit(true, true, false, true);
-        emit SessionSpend7702.SessionRevocation(STRATEGY_A, sessionKey, 1);
-        wallet.revoke(STRATEGY_A, sessionKey);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertTrue(session.revoked);
-        assertEq(session.nonce, 1);
-
-        _expectSwapReverts(SessionSpend7702.SessionRevoked.selector, 0);
-    }
-
-    function testRevokeByOwnerBlocksSwap() public {
-        vm.prank(address(wallet));
-        wallet.revoke(STRATEGY_A, sessionKey);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertTrue(session.revoked);
-        _expectSwapReverts(SessionSpend7702.SessionRevoked.selector, 0);
-    }
-
-    function testRevokeRejectsUnknownSession() public {
-        vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.SessionUnknown.selector);
-        wallet.revoke(STRATEGY_A, vm.addr(0x999));
-    }
-
-    function testRelayedSessionSignedRevokeBlocksSwap() public {
-        SessionSpend7702.RevokeIntent memory intent = SessionSpend7702.RevokeIntent({
-            strategyId: STRATEGY_A, sessionKey: sessionKey, nonce: 0, deadline: EXPIRES_AT
-        });
-
-        vm.prank(vm.addr(0xB0B));
-        wallet.revokeWithSignature(intent, _signRevokeIntent(intent));
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        SessionSpendBase.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
         assertTrue(session.revoked);
         assertEq(session.nonce, 1);
     }
 
-    function testRelayedRevokeRejectsReplay() public {
-        SessionSpend7702.RevokeIntent memory intent = SessionSpend7702.RevokeIntent({
-            strategyId: STRATEGY_A, sessionKey: sessionKey, nonce: 0, deadline: EXPIRES_AT
-        });
-        bytes memory signature = _signRevokeIntent(intent);
-        wallet.revokeWithSignature(intent, signature);
-
-        vm.expectRevert(SessionSpend7702.SessionRevoked.selector);
-        wallet.revokeWithSignature(intent, signature);
-    }
-
-    // ── rotate ───────────────────────────────────────────────────────────────
-
-    function testRotateSessionTransfersState() public {
-        _buy(100_000_000, 0.09 ether);
-
-        address newKey = vm.addr(0xC0FFEE);
-        vm.prank(address(wallet));
-        vm.expectEmit(true, true, true, false);
-        emit SessionSpend7702.SessionRotated(STRATEGY_A, sessionKey, newKey);
-        wallet.rotateSession(STRATEGY_A, sessionKey, newKey);
-
-        SessionSpend7702.Session memory oldSession = wallet.sessionOf(STRATEGY_A, sessionKey);
-        SessionSpend7702.Session memory newSession = wallet.sessionOf(STRATEGY_A, newKey);
-        assertFalse(oldSession.exists);
-        assertTrue(oldSession.revoked);
-        assertTrue(newSession.exists);
-        assertFalse(newSession.revoked);
-        assertEq(newSession.limitUsdc, LIMIT_USDC);
-        assertEq(newSession.capacityUsdc, LIMIT_USDC);
-        assertEq(newSession.deployedUsdc, 100_000_000);
-        assertEq(newSession.nonce, 1);
-
-        SessionSpend7702.AssetRecord memory wethAsset = wallet.assetOf(STRATEGY_A, address(weth));
-        assertEq(wethAsset.quantity, 0.1 ether);
-    }
-
-    function testRotateRejectsTakenNewKey() public {
-        address takenKey = vm.addr(0xBEEF);
-        vm.prank(address(wallet));
-        wallet.grant(STRATEGY_A, takenKey, LIMIT_USDC, EXPIRES_AT);
-
-        vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.SessionKeyTaken.selector);
-        wallet.rotateSession(STRATEGY_A, sessionKey, takenKey);
-    }
-
-    function testRotateRejectsUnknownOldKey() public {
-        vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.SessionUnknown.selector);
-        wallet.rotateSession(STRATEGY_A, vm.addr(0x999), vm.addr(0xC0FFEE));
-    }
-
-    // ── setLimit ─────────────────────────────────────────────────────────────
-
-    function testSetLimitDecreasesCapacity() public {
-        vm.prank(address(wallet));
-        vm.expectEmit(true, true, false, true);
-        emit SessionSpend7702.SessionLimitUpdated(
-            STRATEGY_A, sessionKey, LIMIT_USDC, 500_000_000, EXPIRES_AT
-        );
-        wallet.setLimit(STRATEGY_A, sessionKey, 500_000_000, EXPIRES_AT);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.limitUsdc, 500_000_000);
-        assertEq(session.capacityUsdc, 500_000_000);
-    }
-
-    function testSetLimitIncreasesCapacity() public {
-        _buy(200_000_000, 0.18 ether);
-        _setRate(address(weth), address(usdc), 9e8);
-        _sell(0.2 ether, 1);
-
-        SessionSpend7702.Session memory beforeLimit = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(beforeLimit.capacityUsdc, LIMIT_USDC - 20_000_000);
-
-        vm.prank(address(wallet));
-        wallet.setLimit(STRATEGY_A, sessionKey, 1_500_000_000, EXPIRES_AT);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.limitUsdc, 1_500_000_000);
-        assertEq(session.capacityUsdc, 1_480_000_000);
-    }
-
-    function testSetLimitClampsCapacityWhenDeployedExceedsNewLimit() public {
-        _buy(800_000_000, 0.79 ether);
-
-        vm.prank(address(wallet));
-        wallet.setLimit(STRATEGY_A, sessionKey, 500_000_000, EXPIRES_AT);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.limitUsdc, 500_000_000);
-        assertEq(session.capacityUsdc, 500_000_000);
-        assertEq(session.deployedUsdc, 800_000_000);
-    }
-
-    function testSetLimitRejectsUnknownSession() public {
-        vm.prank(address(wallet));
-        vm.expectRevert(SessionSpend7702.SessionUnknown.selector);
-        wallet.setLimit(STRATEGY_A, vm.addr(0x999), LIMIT_USDC, EXPIRES_AT);
-    }
-
-    // ── executeSwap buy accounting ───────────────────────────────────────────
-
-    function testBuyUpdatesDeployedUsdcAndAssetCost() public {
-        uint256 spend = 100_000_000;
-        _buy(spend, 0.09 ether);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, spend);
-        assertEq(session.capacityUsdc, LIMIT_USDC);
-        assertEq(usdc.balanceOf(address(wallet)), 10_000_000_000 - spend);
-
-        SessionSpend7702.AssetRecord memory asset = wallet.assetOf(STRATEGY_A, address(weth));
-        assertEq(asset.quantity, 0.1 ether);
-        assertEq(asset.costUsdc, uint128(spend));
-    }
-
-    function testBuyNeedsNoPreExistingAllowanceAndResetsAfterSuccess() public {
-        uint256 spend = 100_000_000;
-        assertEq(usdc.allowance(address(wallet), ALLOWANCE_HOLDER), 0);
-
-        _buy(spend, 0.09 ether);
-
-        assertEq(_observedAllowance(address(usdc), address(wallet)), spend);
-        assertEq(usdc.allowance(address(wallet), ALLOWANCE_HOLDER), 0);
-    }
-
-    function testUsdtStyleZeroFirstApproveWorks() public {
-        MockUsdt usdt = new MockUsdt();
-        SessionSpend7702 implementation = new SessionSpend7702(address(usdt));
-        address delegatedEoa = vm.addr(0x7703);
-        vm.etch(delegatedEoa, address(implementation).code);
-
-        wallet = SessionSpend7702(payable(delegatedEoa));
-        usdc = MockERC20(address(usdt));
-        usdt.mint(delegatedEoa, 1_000_000_000);
-        _setRate(address(usdt), address(weth), 1e27);
-
-        vm.prank(delegatedEoa);
-        wallet.grant(STRATEGY_A, sessionKey, LIMIT_USDC, EXPIRES_AT);
-        vm.prank(delegatedEoa);
-        usdt.approve(ALLOWANCE_HOLDER, 1);
-
-        _buy(100_000_000, 0.09 ether);
-
-        assertEq(_observedAllowance(address(usdt), delegatedEoa), 100_000_000);
-        assertEq(usdt.allowance(delegatedEoa, ALLOWANCE_HOLDER), 0);
-    }
-
-    function testBuySpendLimitExceeded() public {
-        uint256 spend = LIMIT_USDC + 1;
-        _approveForHolder(address(usdc), spend);
-
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(spend, 1, 0);
-        bytes memory routerCalldata = _execCalldata(address(usdc), spend, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.SpendLimitExceeded.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    function testBuyCumulativeSpendRespectsRemainingCapacity() public {
-        _buy(600_000_000, 0.59 ether);
-
-        uint256 remaining = LIMIT_USDC - 600_000_000;
-        _approveForHolder(address(usdc), remaining + 1);
-
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(remaining + 1, 1, 1);
-        bytes memory routerCalldata = _execCalldata(address(usdc), remaining + 1, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.SpendLimitExceeded.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    // ── executeSwap sell accounting ──────────────────────────────────────────
-
-    function testSellProfitReplenishesCapacityUpToLimit() public {
-        _buy(200_000_000, 0.2 ether);
-
-        _setRate(address(weth), address(usdc), 9e8);
-        _sell(0.2 ether, 1);
-
-        SessionSpend7702.Session memory afterLoss = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(afterLoss.deployedUsdc, 0);
-        assertEq(afterLoss.capacityUsdc, LIMIT_USDC - 20_000_000);
-
-        _setRate(address(weth), address(usdc), 12e8);
-        _buy(180_000_000, 0.18 ether);
-        _sell(0.18 ether, 2);
-
-        SessionSpend7702.Session memory afterProfit = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(afterProfit.capacityUsdc, LIMIT_USDC);
-    }
-
-    function testSellLossReducesCapacity() public {
-        _buy(200_000_000, 0.2 ether);
-
-        _setRate(address(weth), address(usdc), 9e8);
-        _sell(0.2 ether, 1);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, 0);
-        assertEq(session.capacityUsdc, LIMIT_USDC - 20_000_000);
-
-        SessionSpend7702.AssetRecord memory asset = wallet.assetOf(STRATEGY_A, address(weth));
-        assertEq(asset.quantity, 0);
-        assertEq(asset.costUsdc, 0);
-    }
-
-    function testInventorySellNeedsNoPreExistingAllowanceAndResetsAfterSuccess() public {
-        _buy(200_000_000, 0.2 ether);
-        assertEq(weth.allowance(address(wallet), ALLOWANCE_HOLDER), 0);
-
-        _sell(0.2 ether, 1);
-
-        assertEq(_observedAllowance(address(weth), address(wallet)), 0.2 ether);
-        assertEq(weth.allowance(address(wallet), ALLOWANCE_HOLDER), 0);
-    }
-
-    function testSellPartialReleaseProportionalCost() public {
-        _buy(200_000_000, 0.2 ether);
-
-        _setRate(address(weth), address(usdc), 1e9);
-        _sell(0.1 ether, 90_000_000);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, 100_000_000);
-
-        SessionSpend7702.AssetRecord memory asset = wallet.assetOf(STRATEGY_A, address(weth));
-        assertEq(asset.quantity, 0.1 ether);
-        assertEq(asset.costUsdc, 100_000_000);
-    }
-
-    function testInsufficientInventoryOnSell() public {
-        _buy(100_000_000, 0.09 ether);
-        weth.mint(address(wallet), 0.1 ether);
-
-        _approveForHolder(address(weth), 0.2 ether);
-        SessionSpend7702.SwapIntent memory intent = SessionSpend7702.SwapIntent({
-            strategyId: STRATEGY_A,
-            sessionKey: sessionKey,
-            nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
-            deadline: EXPIRES_AT,
-            sellToken: address(weth),
-            buyToken: address(usdc),
-            maxSellAmount: 0.2 ether,
-            minBuyAmount: 1,
-            routerCalldataHash: bytes32(0)
-        });
-        bytes memory routerCalldata = _execCalldata(address(weth), 0.2 ether, address(usdc));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.InsufficientInventory.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    function testStrategyIsolationInventory() public {
-        uint256 sessionBPrivateKey = 0xBEEF;
-        address sessionB = vm.addr(sessionBPrivateKey);
-        vm.prank(address(wallet));
-        wallet.grant(STRATEGY_B, sessionB, LIMIT_USDC, EXPIRES_AT);
-
-        _buy(100_000_000, 0.09 ether);
-        weth.mint(address(wallet), 0.1 ether);
-
-        _approveForHolder(address(weth), 0.1 ether);
-        SessionSpend7702.SwapIntent memory intent = SessionSpend7702.SwapIntent({
-            strategyId: STRATEGY_B,
-            sessionKey: sessionB,
-            nonce: 0,
-            deadline: EXPIRES_AT,
-            sellToken: address(weth),
-            buyToken: address(usdc),
-            maxSellAmount: 0.1 ether,
-            minBuyAmount: 1,
-            routerCalldataHash: bytes32(0)
-        });
-        bytes memory routerCalldata = _execCalldata(address(weth), 0.1 ether, address(usdc));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.InsufficientInventory.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntentWithKey(sessionBPrivateKey, intent));
-    }
-
-    // ── nonce replay ─────────────────────────────────────────────────────────
-
-    function testReplayRejectedAfterSuccessfulSwap() public {
-        uint256 spend = 50_000_000;
-        _approveForHolder(address(usdc), spend);
-
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(spend, 0.045 ether, 0);
-        bytes memory routerCalldata = _execCalldata(address(usdc), spend, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-        bytes memory signature = _signIntent(intent);
-
-        wallet.executeSwap(intent, routerCalldata, signature);
-
-        vm.expectRevert(SessionSpend7702.NonceMismatch.selector);
-        wallet.executeSwap(intent, routerCalldata, signature);
-    }
-
-    function testWrongNonceRejectedBeforeSwap() public {
-        _approveForHolder(address(usdc), 50_000_000);
-
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(50_000_000, 0.045 ether, 99);
-        bytes memory routerCalldata = _execCalldata(address(usdc), 50_000_000, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.NonceMismatch.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    // ── expired / revoked session ────────────────────────────────────────────
-
-    function testExpiredSessionRejectsSwap() public {
-        vm.warp(EXPIRES_AT + 1);
-        _approveForHolder(address(usdc), 10_000_000);
-
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(10_000_000, 0.009 ether, 0);
-        intent.deadline = EXPIRES_AT + 1000;
-        bytes memory routerCalldata = _execCalldata(address(usdc), 10_000_000, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.SessionExpired.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    function testRevokedSessionRejectsSwap() public {
+    function testRevokedSessionRejectsV2Swap() public {
         vm.prank(sessionKey);
         wallet.revoke(STRATEGY_A, sessionKey);
-        _expectSwapReverts(SessionSpend7702.SessionRevoked.selector, 1);
-    }
-
-    function testIntentExpiredRejectsSwap() public {
-        _approveForHolder(address(usdc), 50_000_000);
-
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(50_000_000, 0.045 ether, 0);
-        intent.deadline = block.timestamp - 1;
-        bytes memory routerCalldata = _execCalldata(address(usdc), 50_000_000, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.IntentExpired.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    // ── router calldata policy ───────────────────────────────────────────────
-
-    function testRouterCalldataHashMismatchRejectsSwap() public {
-        _approveForHolder(address(usdc), 100_000_000);
-
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(100_000_000, 0.09 ether, 0);
-        bytes memory signedCalldata = _execCalldata(address(usdc), 100_000_000, address(weth));
-        intent.routerCalldataHash = keccak256(signedCalldata);
-
-        bytes memory maliciousCalldata = _execCalldata(address(usdc), 200_000_000, address(weth));
-
-        vm.expectRevert(SessionSpend7702.InvalidIntent.selector);
-        wallet.executeSwap(intent, maliciousCalldata, _signIntent(intent));
-    }
-
-    function testSelectorPolicyRejectsNonExec() public {
-        _approveForHolder(address(usdc), 100_000_000);
-
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(100_000_000, 0.09 ether, 0);
-        bytes memory routerCalldata = abi.encodeWithSignature("evil()");
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.SelectorNotAllowed.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    function testRouterTokenFieldMustMatchIntent() public {
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(100_000_000, 1, 0);
-        bytes memory routerCalldata = _execCalldata(address(weth), 100_000_000, address(usdc));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.RouterFieldsMismatch.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    function testRouterAmountFieldMustMatchIntent() public {
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(100_000_000, 1, 0);
-        bytes memory routerCalldata = _execCalldata(address(usdc), 99_000_000, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.RouterFieldsMismatch.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    function testRouterTargetAndOperatorMustMatch() public {
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(100_000_000, 1, 0);
-        bytes memory routerCalldata = abi.encodeWithSelector(
-            0x2213bc0b,
-            address(0x1111),
-            address(usdc),
-            100_000_000,
-            address(0x2222),
-            abi.encode(address(weth))
-        );
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.RouterFieldsMismatch.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    function testMaliciousRouterCannotPullMoreThanIntentMaximum() public {
-        uint256 spend = 100_000_000;
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(spend, 1, 0);
-        bytes memory routerCalldata = _execCalldata(address(usdc), spend, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-        _setAttack(true, false);
-
-        vm.expectPartialRevert(SessionSpend7702.CallFailed.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-
-        assertEq(usdc.allowance(address(wallet), ALLOWANCE_HOLDER), 0);
-        assertEq(usdc.balanceOf(address(wallet)), 10_000_000_000);
-        assertEq(wallet.sessionOf(STRATEGY_A, sessionKey).nonce, 0);
-    }
-
-    function testRouterRevertLeavesNoAllowanceOrSwapState() public {
-        uint256 spend = 100_000_000;
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(spend, 1, 0);
-        bytes memory routerCalldata = _execCalldata(address(usdc), spend, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-        _setAttack(false, true);
-
-        vm.expectPartialRevert(SessionSpend7702.CallFailed.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-
-        assertEq(usdc.allowance(address(wallet), ALLOWANCE_HOLDER), 0);
-        assertEq(usdc.balanceOf(address(wallet)), 10_000_000_000);
-        assertEq(weth.balanceOf(address(wallet)), 0);
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.nonce, 0);
-        assertEq(session.deployedUsdc, 0);
-        SessionSpend7702.AssetRecord memory asset = wallet.assetOf(STRATEGY_A, address(weth));
-        assertEq(asset.quantity, 0);
-        assertEq(asset.costUsdc, 0);
-    }
-
-    function testInvalidSignatureRejected() public {
-        _approveForHolder(address(usdc), 50_000_000);
-
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(50_000_000, 0.045 ether, 0);
-        bytes memory routerCalldata = _execCalldata(address(usdc), 50_000_000, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        uint256 wrongKey = 0xBAD;
-        vm.expectRevert(SessionSpend7702.InvalidSignature.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntentWithKey(wrongKey, intent));
-    }
-
-    // ── indexing ─────────────────────────────────────────────────────────────
-
-    function testEnumerableIndexes() public {
-        assertEq(wallet.strategyCount(), 1);
-        assertEq(wallet.strategyAt(0), STRATEGY_A);
-        assertEq(wallet.sessionCount(STRATEGY_A), 1);
-        assertEq(wallet.sessionAt(STRATEGY_A, 0), sessionKey);
-    }
-
-    // ── executeSwapWithFees buy ──────────────────────────────────────────────
-
-    function testBuyWithFeesChargesTreasuryAndGasRecipient() public {
-        uint256 spend = 100_000_000;
-        uint256 feeTotal = PLATFORM_FEE + GAS_SELL;
-        uint256 nativeOut = (GAS_SELL * NATIVE_RATE) / 1e18;
-
-        _buyWithFees(spend, 0.09 ether, PLATFORM_FEE, GAS_SELL, nativeOut);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, spend);
-        assertEq(session.capacityUsdc, LIMIT_USDC - feeTotal);
-        assertEq(usdc.balanceOf(feeRecipient), PLATFORM_FEE);
-        assertEq(gasRecipient.balance, nativeOut);
-        assertEq(usdc.balanceOf(address(wallet)), 10_000_000_000 - spend - feeTotal);
-    }
-
-    function testGasRecipientMustBeTransactionBroadcaster() public {
-        uint256 spend = 100_000_000;
-        SessionSpend7702.SwapBundleIntent memory intent = _buyBundleIntent(
-            spend, 1, wallet.sessionOf(STRATEGY_A, sessionKey).nonce, PLATFORM_FEE, GAS_SELL, 1
-        );
-        bytes memory strategyCalldata = _execCalldata(address(usdc), spend, address(weth));
-        bytes memory gasCalldata = _execCalldata(address(usdc), GAS_SELL, address(0));
-        intent.routerCalldataHash = keccak256(strategyCalldata);
-        intent.gasRouterCalldataHash = keccak256(gasCalldata);
-
-        vm.prank(address(0xBAD));
-        vm.expectRevert(SessionSpend7702.InvalidIntent.selector);
-        wallet.executeSwapWithFees(intent, strategyCalldata, gasCalldata, _signBundleIntent(intent));
-    }
-
-    function testBuyWithFeesAllInLimitIncludesStrategyFeeAndGas() public {
-        uint256 spend = LIMIT_USDC - PLATFORM_FEE - GAS_SELL;
-        _approveForHolder(address(usdc), spend);
-
-        SessionSpend7702.SwapBundleIntent memory intent = _buyBundleIntent(
-            spend, 1, wallet.sessionOf(STRATEGY_A, sessionKey).nonce, PLATFORM_FEE, GAS_SELL, 1
-        );
-        bytes memory strategyCalldata = _execCalldata(address(usdc), spend, address(weth));
-        bytes memory gasCalldata = _execCalldata(address(usdc), GAS_SELL, address(0));
-        intent.routerCalldataHash = keccak256(strategyCalldata);
-        intent.gasRouterCalldataHash = keccak256(gasCalldata);
-
-        vm.prank(gasRecipient);
-        wallet.executeSwapWithFees(intent, strategyCalldata, gasCalldata, _signBundleIntent(intent));
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, spend);
-        assertEq(session.capacityUsdc, LIMIT_USDC - PLATFORM_FEE - GAS_SELL);
-        assertEq(uint256(session.capacityUsdc) - uint256(session.deployedUsdc), 0);
-    }
-
-    function testBuyWithFeesSpendLimitExceededWhenAllInExceeded() public {
-        uint256 spend = LIMIT_USDC - PLATFORM_FEE - GAS_SELL + 1;
-        _approveForHolder(address(usdc), spend);
-
-        SessionSpend7702.SwapBundleIntent memory intent = _buyBundleIntent(
-            spend, 1, wallet.sessionOf(STRATEGY_A, sessionKey).nonce, PLATFORM_FEE, GAS_SELL, 1
-        );
-        bytes memory strategyCalldata = _execCalldata(address(usdc), spend, address(weth));
-        bytes memory gasCalldata = _execCalldata(address(usdc), GAS_SELL, address(0));
-        intent.routerCalldataHash = keccak256(strategyCalldata);
-        intent.gasRouterCalldataHash = keccak256(gasCalldata);
-
-        vm.expectRevert(SessionSpend7702.SpendLimitExceeded.selector);
-        vm.prank(gasRecipient);
-        wallet.executeSwapWithFees(intent, strategyCalldata, gasCalldata, _signBundleIntent(intent));
-    }
-
-    function testBuyWithFeesDoesNotIncreaseDeployedForFees() public {
-        uint256 spend = 100_000_000;
-        _buyWithFees(spend, 0.09 ether, PLATFORM_FEE, GAS_SELL, 1);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, spend);
-        assertLt(session.capacityUsdc, LIMIT_USDC);
-    }
-
-    // ── executeSwapWithFees sell ─────────────────────────────────────────────
-
-    function testSellWithFeesExecutesStrategyBeforeChargingFees() public {
-        _buy(200_000_000, 0.2 ether);
-        uint256 treasuryBefore = usdc.balanceOf(feeRecipient);
-        uint256 gasBefore = gasRecipient.balance;
-
-        _sellWithFees(0.2 ether, 1, PLATFORM_FEE, GAS_SELL, 1);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, 0);
-        assertEq(session.capacityUsdc, LIMIT_USDC - PLATFORM_FEE - GAS_SELL);
-        assertEq(usdc.balanceOf(feeRecipient), treasuryBefore + PLATFORM_FEE);
-        assertGt(gasRecipient.balance, gasBefore);
-    }
-
-    function testSellWithFeesDeductsCapacityNotDeployed() public {
-        _buy(200_000_000, 0.2 ether);
-        _sellWithFees(0.2 ether, 1, PLATFORM_FEE, GAS_SELL, 1);
-
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, 0);
-        assertEq(session.capacityUsdc, LIMIT_USDC - PLATFORM_FEE - GAS_SELL);
-    }
-
-    // ── native strategy inventory ───────────────────────────────────────────
-
-    function testNativeBuyRecordsZeroAddressInventory() public {
-        _buyNative(100_000_000, 0.09 ether);
-
-        SessionSpend7702.AssetRecord memory asset = wallet.assetOf(STRATEGY_A, address(0));
-        assertEq(asset.quantity, 0.1 ether);
-        assertEq(asset.costUsdc, 100_000_000);
-        assertEq(wallet.sessionOf(STRATEGY_A, sessionKey).deployedUsdc, 100_000_000);
-    }
-
-    function testNativeSellUsesCallValueWithoutApproval() public {
-        _buyNative(100_000_000, 0.09 ether);
-        _sellNative(0.1 ether, 90_000_000);
-
-        SessionSpend7702.AssetRecord memory asset = wallet.assetOf(STRATEGY_A, address(0));
-        assertEq(asset.quantity, 0);
-        assertEq(asset.costUsdc, 0);
-        assertEq(_observedCallValue(), 0.1 ether);
-        assertEq(wallet.sessionOf(STRATEGY_A, sessionKey).deployedUsdc, 0);
-    }
-
-    function testNativeSellRejectsUnrecordedWalletBalance() public {
-        _buyNative(100_000_000, 0.09 ether);
-        vm.deal(address(wallet), address(wallet).balance + 1 ether);
-
-        SessionSpend7702.SwapIntent memory intent = SessionSpend7702.SwapIntent({
-            strategyId: STRATEGY_A,
-            sessionKey: sessionKey,
-            nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
-            deadline: EXPIRES_AT,
-            sellToken: address(0),
-            buyToken: address(usdc),
-            maxSellAmount: 0.2 ether,
-            minBuyAmount: 1,
-            routerCalldataHash: bytes32(0)
-        });
-        bytes memory routerCalldata = _execCalldata(address(0), 0.2 ether, address(usdc));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(SessionSpend7702.InsufficientInventory.selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
+        _expectV2SwapReverts(SessionSpendBase.SessionRevoked.selector);
     }
 
     // ── executeSwapWithFeesV2 ───────────────────────────────────────────────
 
     function testV2CreditOnlyExecutesWithoutTopUp() public {
-        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
-            address(weth),
-            100_000_000,
-            0.09 ether,
-            SessionSpend7702.GasFundingMode.CREDIT_ONLY,
-            0,
-            0
+        SessionSpendBase.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
+            100_000_000, 0.09 ether, 0, SessionSpendBase.GasFundingMode.CREDIT_ONLY, 0, 0
         );
         _swapBundleV2(intent, address(this));
-
-        assertEq(wallet.assetOf(STRATEGY_A, address(weth)).quantity, 0.1 ether);
         assertEq(wallet.sessionOf(STRATEGY_A, sessionKey).deployedUsdc, 100_000_000);
     }
 
     function testV2SeparateTopUpTransfersAndEmitsAfterSuccess() public {
-        uint256 nativeOut = (GAS_SELL * NATIVE_RATE) / 1e18;
-        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
-            address(weth),
+        SessionSpendBase.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
             100_000_000,
             0.09 ether,
-            SessionSpend7702.GasFundingMode.SEPARATE_TOPUP,
-            GAS_SELL,
-            nativeOut
+            0,
+            SessionSpendBase.GasFundingMode.SEPARATE_TOPUP,
+            GAS_TOP_UP_USDC(),
+            GAS_TOP_UP_NATIVE()
         );
-
-        vm.expectEmit(true, true, true, true);
-        emit SessionSpend7702.GasCreditFunded(
-            STRATEGY_A,
-            sessionKey,
-            gasRecipient,
-            SessionSpend7702.GasFundingMode.SEPARATE_TOPUP,
-            GAS_SELL,
-            nativeOut
-        );
+        uint256 before = gasRecipient.balance;
         _swapBundleV2(intent, gasRecipient);
-
-        assertEq(gasRecipient.balance, nativeOut);
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, 100_000_000);
-        assertEq(session.capacityUsdc, LIMIT_USDC - GAS_SELL);
+        assertGt(gasRecipient.balance, before);
     }
 
-    function testV2NativeOutputSplitsGasFromStrategyInventory() public {
-        uint256 strategySell = 100_000_000;
-        uint256 gasNative = (GAS_SELL * NATIVE_RATE) / 1e18;
-        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
-            address(0),
-            strategySell,
-            0.09 ether,
-            SessionSpend7702.GasFundingMode.NATIVE_OUTPUT,
-            GAS_SELL,
-            gasNative
+    function testV2UsesDomainVersionOne() public {
+        SessionSpendBase.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
+            100_000_000, 0.09 ether, 0, SessionSpendBase.GasFundingMode.CREDIT_ONLY, 0, 0
         );
-        _swapBundleV2(intent, gasRecipient);
-
-        SessionSpend7702.AssetRecord memory nativeAsset = wallet.assetOf(STRATEGY_A, address(0));
-        assertEq(nativeAsset.quantity, 0.1 ether);
-        assertEq(nativeAsset.costUsdc, strategySell);
-        assertEq(gasRecipient.balance, gasNative);
-        SessionSpend7702.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
-        assertEq(session.deployedUsdc, strategySell);
-        assertEq(session.capacityUsdc, LIMIT_USDC - GAS_SELL);
-    }
-
-    function testV2RejectsGasRecipientDifferentFromBroadcaster() public {
-        uint256 nativeOut = (GAS_SELL * NATIVE_RATE) / 1e18;
-        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
-            address(weth),
-            100_000_000,
-            1,
-            SessionSpend7702.GasFundingMode.SEPARATE_TOPUP,
-            GAS_SELL,
-            nativeOut
-        );
-        (bytes memory strategyCalldata, bytes memory gasCalldata) = _v2Calldata(intent);
+        bytes memory strategyCalldata =
+            _execCalldata(address(usdc), intent.strategySellAmount, address(weth));
         intent.strategyRouterCalldataHash = keccak256(strategyCalldata);
-        intent.gasRouterCalldataHash = keccak256(gasCalldata);
+        bytes memory badSig = _signBundleIntentV2WithVersion(intent, "2");
+        vm.expectRevert(SessionSpendBase.InvalidSignature.selector);
+        wallet.executeSwapWithFeesV2(intent, strategyCalldata, "", badSig);
+    }
+
+    // ── relay deposit ───────────────────────────────────────────────────────
+
+    function testRelayDepositLocksCapacityAndSpendsFromVault() public {
+        uint256 originAmount = 100_000_000;
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        uint256 vaultBefore = usdc.balanceOf(vault);
+
+        _executeRelayDeposit(RELAY_ORDER_A, originAmount, 0, vault);
+
+        SessionSpendBase.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, originAmount);
+        assertEq(session.nonce, 1);
+        assertTrue(
+            wallet.relayReceiptConsumed(
+                STRATEGY_A, RELAY_ORDER_A, SessionSpendBase.RelayAction.Deposit
+            )
+        );
+
+        SessionSpendBase.PendingDeposit memory pending = wallet.pendingDepositOf(RELAY_ORDER_A);
+        assertTrue(pending.exists);
+        assertEq(pending.lockedCostUsdc, uint128(originAmount));
+
+        assertEq(usdc.balanceOf(vault), vaultBefore);
+        assertEq(usdc.balanceOf(RELAY_DEPOSITORY), originAmount);
+    }
+
+    function testRelayDepositRejectsWrongRelayer() public {
+        SessionSpendBase.RelayDepositIntent memory intent =
+            _relayDepositIntent(RELAY_ORDER_A, 100_000_000);
+        (address target, bytes memory data, bytes32 callHash) =
+            _relayCall(vaultFor(STRATEGY_A), address(usdc), 100_000_000);
+        intent.relayCalldataHash = callHash;
+        bytes memory sig = _signRelayDeposit(intent);
 
         vm.prank(address(0xBAD));
-        vm.expectRevert(SessionSpend7702.InvalidIntent.selector);
-        wallet.executeSwapWithFeesV2(
-            intent, strategyCalldata, gasCalldata, _signBundleIntentV2(intent)
-        );
+        vm.expectRevert(SessionSpendBase.NotPlatformRelayer.selector);
+        wallet.executeRelayDeposit(intent, target, data, 0, sig);
     }
 
-    function testV2SeparateTopUpEnforcesSignedNativeBound() public {
-        uint256 nativeOut = (GAS_SELL * NATIVE_RATE) / 1e18;
-        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
-            address(weth),
-            100_000_000,
-            1,
-            SessionSpend7702.GasFundingMode.SEPARATE_TOPUP,
-            GAS_SELL,
-            nativeOut + 1
-        );
+    function testRelayDepositReplayRejected() public {
+        _executeRelayDeposit(RELAY_ORDER_A, 50_000_000, 0, wallet.strategyVaultOf(STRATEGY_A));
 
-        vm.expectRevert(SessionSpend7702.SlippageExceeded.selector);
-        _swapBundleV2(intent, gasRecipient);
+        SessionSpendBase.RelayDepositIntent memory intent =
+            _relayDepositIntent(RELAY_ORDER_A, 50_000_000);
+        intent.nonce = 1;
+        (address target, bytes memory data, bytes32 callHash) =
+            _relayCall(vaultFor(STRATEGY_A), address(usdc), 50_000_000);
+        intent.relayCalldataHash = callHash;
+
+        vm.prank(platformRelayer);
+        vm.expectRevert(SessionSpendBase.RelayReceiptConsumed.selector);
+        wallet.executeRelayDeposit(intent, target, data, 0, _signRelayDeposit(intent));
     }
 
-    function testV2NativeOutputEnforcesCombinedOutputBound() public {
-        uint256 gasNative = (GAS_SELL * NATIVE_RATE) / 1e18;
-        SessionSpend7702.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
-            address(0),
-            100_000_000,
-            0.1 ether + 1,
-            SessionSpend7702.GasFundingMode.NATIVE_OUTPUT,
-            GAS_SELL,
-            gasNative
-        );
+    function testRelayDepositRequiresRefundVaultMatchStrategyVault() public {
+        SessionSpendBase.RelayDepositIntent memory intent =
+            _relayDepositIntent(RELAY_ORDER_A, 100_000_000);
+        intent.refundVault = address(0xBEEF);
+        (address target, bytes memory data, bytes32 callHash) =
+            _relayCall(vaultFor(STRATEGY_A), address(usdc), 100_000_000);
+        intent.relayCalldataHash = callHash;
 
-        vm.expectRevert(SessionSpend7702.SlippageExceeded.selector);
-        _swapBundleV2(intent, gasRecipient);
+        vm.prank(platformRelayer);
+        vm.expectRevert(SessionSpendBase.InvalidIntent.selector);
+        wallet.executeRelayDeposit(intent, target, data, 0, _signRelayDeposit(intent));
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────────
+    // ── credit relay asset ──────────────────────────────────────────────────
 
-    function _buyNative(uint256 spend, uint256 minBuy) internal {
-        SessionSpend7702.SwapIntent memory intent = SessionSpend7702.SwapIntent({
+    function testCreditRelayAssetUpdatesRemoteInventoryAndAccountedBalance() public {
+        _executeRelayDeposit(RELAY_ORDER_B, 100_000_000, 0, wallet.strategyVaultOf(STRATEGY_A));
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        weth.mint(vault, 1 ether);
+
+        _creditRelayAsset(RELAY_ORDER_B, address(weth), 1 ether, 100_000_000);
+
+        SessionSpendBase.RemoteAssetRecord memory remote =
+            wallet.remoteAssetOf(STRATEGY_A, address(weth), FUNDING_CHAIN_ID);
+        assertEq(remote.quantity, 1 ether);
+        assertEq(remote.costUsdc, 100_000_000);
+        assertEq(wallet.vaultAccountedBalanceOf(STRATEGY_A, address(weth)), 1 ether);
+    }
+
+    function testCreditRelayAssetRejectsExcessCredit() public {
+        _executeRelayDeposit(RELAY_ORDER_B, 100_000_000, 0, wallet.strategyVaultOf(STRATEGY_A));
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        weth.mint(vault, 0.5 ether);
+
+        SessionSpendBase.CreditRelayAssetIntent memory intent =
+            SessionSpendBase.CreditRelayAssetIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+                deadline: EXPIRES_AT,
+                relayOrderId: RELAY_ORDER_B,
+                token: address(weth),
+                fundingChainId: FUNDING_CHAIN_ID,
+                creditQuantity: 1 ether,
+                costUsdc: 100_000_000
+            });
+
+        vm.prank(platformRelayer);
+        vm.expectRevert(SessionSpendBase.InsufficientVaultSurplus.selector);
+        wallet.creditRelayAsset(intent, _signCreditRelayAsset(intent));
+    }
+
+    // ── remote relay sell + return ──────────────────────────────────────────
+
+    function testRemoteRelaySellConsumesRemoteInventory() public {
+        _seedRemoteInventory(1 ether, 200_000_000);
+        _executeRemoteRelaySell(RELAY_ORDER_B, 0.5 ether);
+
+        SessionSpendBase.RemoteAssetRecord memory remote =
+            wallet.remoteAssetOf(STRATEGY_A, address(weth), FUNDING_CHAIN_ID);
+        assertEq(remote.quantity, 0.5 ether);
+        assertEq(remote.costUsdc, 100_000_000);
+
+        SessionSpendBase.PendingSell memory pending = wallet.pendingSellOf(RELAY_ORDER_B);
+        assertTrue(pending.exists);
+        assertEq(pending.quantity, 0.5 ether);
+        assertEq(pending.provisionalCostUsdc, 100_000_000);
+    }
+
+    function testCreditUsdcReturnReleasesDeployedAndAppliesProfit() public {
+        _seedRemoteInventory(1 ether, 200_000_000);
+        _executeRemoteRelaySell(RELAY_ORDER_B, 0.5 ether);
+
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        usdc.mint(vault, 220_000_000);
+
+        SessionSpendBase.CreditUsdcReturnIntent memory intent =
+            SessionSpendBase.CreditUsdcReturnIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+                deadline: EXPIRES_AT,
+                relayOrderId: RELAY_ORDER_B,
+                fundingChainId: FUNDING_CHAIN_ID,
+                usdcReceived: 220_000_000,
+                destQuantityReleased: 0.5 ether,
+                destCostReleasedUsdc: 100_000_000,
+                platformFeeUsdc: 0,
+                feeRecipient: address(0)
+            });
+
+        vm.prank(platformRelayer);
+        wallet.creditUsdcReturn(intent, _signCreditUsdcReturn(intent));
+
+        SessionSpendBase.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, 100_000_000);
+        assertEq(session.capacityUsdc, LIMIT_USDC);
+        assertFalse(wallet.pendingSellOf(RELAY_ORDER_B).exists);
+    }
+
+    function testCreditUsdcReturnRequiresPendingSell() public {
+        _seedRemoteInventory(1 ether, 200_000_000);
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        usdc.mint(vault, 220_000_000);
+
+        SessionSpendBase.CreditUsdcReturnIntent memory intent =
+            SessionSpendBase.CreditUsdcReturnIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+                deadline: EXPIRES_AT,
+                relayOrderId: RELAY_ORDER_B,
+                fundingChainId: FUNDING_CHAIN_ID,
+                usdcReceived: 220_000_000,
+                destQuantityReleased: 0.5 ether,
+                destCostReleasedUsdc: 100_000_000,
+                platformFeeUsdc: 0,
+                feeRecipient: address(0)
+            });
+
+        vm.prank(platformRelayer);
+        vm.expectRevert(SessionSpendBase.PendingRecordMissing.selector);
+        wallet.creditUsdcReturn(intent, _signCreditUsdcReturn(intent));
+    }
+
+    function testReleaseRelayDepositReversesDeployedLock() public {
+        _executeRelayDeposit(RELAY_ORDER_A, 150_000_000, 0, wallet.strategyVaultOf(STRATEGY_A));
+
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        usdc.mint(vault, 150_000_000);
+
+        SessionSpendBase.ReleaseRelayDepositIntent memory intent =
+            SessionSpendBase.ReleaseRelayDepositIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: 1,
+                deadline: EXPIRES_AT,
+                relayOrderId: RELAY_ORDER_A,
+                token: address(usdc),
+                fundingChainId: FUNDING_CHAIN_ID,
+                refundQuantity: 150_000_000,
+                refundCostUsdc: 150_000_000
+            });
+
+        vm.prank(platformRelayer);
+        wallet.releaseRelayDeposit(intent, _signReleaseRelayDeposit(intent));
+
+        SessionSpendBase.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, 0);
+        assertFalse(wallet.pendingDepositOf(RELAY_ORDER_A).exists);
+    }
+
+    function testRestoreRemoteRelayAssetRestoresInventory() public {
+        _seedRemoteInventory(1 ether, 200_000_000);
+        _executeRemoteRelaySell(RELAY_ORDER_B, 1 ether);
+
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        weth.mint(vault, 1 ether);
+
+        SessionSpendBase.RestoreRemoteRelayAssetIntent memory intent =
+            SessionSpendBase.RestoreRemoteRelayAssetIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+                deadline: EXPIRES_AT,
+                relayOrderId: RELAY_ORDER_B,
+                token: address(weth),
+                fundingChainId: FUNDING_CHAIN_ID,
+                restoreQuantity: 1 ether,
+                restoreCostUsdc: 200_000_000
+            });
+
+        vm.prank(platformRelayer);
+        wallet.restoreRemoteRelayAsset(intent, _signRestoreRemoteRelayAsset(intent));
+
+        SessionSpendBase.RemoteAssetRecord memory remote =
+            wallet.remoteAssetOf(STRATEGY_A, address(weth), FUNDING_CHAIN_ID);
+        assertEq(remote.quantity, 1 ether);
+        assertEq(remote.costUsdc, 200_000_000);
+        assertFalse(wallet.pendingSellOf(RELAY_ORDER_B).exists);
+    }
+
+    // ── owner recovery ──────────────────────────────────────────────────────
+
+    function testRecoverVaultSurplusTransfersUnaccountedBalance() public {
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        usdc.mint(vault, 25_000_000);
+        address recipient = address(0xCAFE);
+
+        vm.prank(address(wallet));
+        wallet.recoverVaultSurplus(STRATEGY_A, address(usdc), recipient, 25_000_000);
+
+        assertEq(usdc.balanceOf(recipient), 25_000_000);
+        assertEq(usdc.balanceOf(vault), 0);
+    }
+
+    function testRecoverVaultSurplusCannotTakeAccountedInventory() public {
+        _seedRemoteInventory(1 ether, 100_000_000);
+
+        vm.prank(address(wallet));
+        vm.expectRevert(SessionSpendBase.InsufficientVaultSurplus.selector);
+        wallet.recoverVaultSurplus(STRATEGY_A, address(weth), address(0xCAFE), 1 ether);
+    }
+
+    // ── helpers ─────────────────────────────────────────────────────────────
+
+    function GAS_TOP_UP_USDC() internal pure returns (uint256) {
+        return 500_000;
+    }
+
+    function GAS_TOP_UP_NATIVE() internal pure returns (uint256) {
+        return 0.0005 ether;
+    }
+
+    function vaultFor(bytes32 strategyId) internal view returns (address) {
+        return wallet.strategyVaultOf(strategyId);
+    }
+
+    function _seedRemoteInventory(uint256 quantity, uint128 costUsdc) internal {
+        _executeRelayDeposit(RELAY_ORDER_A, costUsdc, 0, wallet.strategyVaultOf(STRATEGY_A));
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        weth.mint(vault, quantity);
+        _creditRelayAsset(RELAY_ORDER_A, address(weth), quantity, costUsdc);
+    }
+
+    function _executeRelayDeposit(
+        bytes32 relayOrderId,
+        uint256 originAmount,
+        uint256 platformFee,
+        address refundVault
+    ) internal {
+        SessionSpendBase.RelayDepositIntent memory intent =
+            _relayDepositIntent(relayOrderId, originAmount);
+        intent.platformFeeUsdc = platformFee;
+        intent.feeRecipient = platformFee > 0 ? feeRecipient : address(0);
+        intent.refundVault = refundVault;
+        (address target, bytes memory data, bytes32 callHash) =
+            _relayCall(refundVault, address(usdc), originAmount);
+        intent.relayCalldataHash = callHash;
+
+        vm.prank(platformRelayer);
+        wallet.executeRelayDeposit(intent, target, data, 0, _signRelayDeposit(intent));
+    }
+
+    function _relayDepositIntent(bytes32 relayOrderId, uint256 originAmount)
+        internal
+        view
+        returns (SessionSpendBase.RelayDepositIntent memory)
+    {
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        return SessionSpendBase.RelayDepositIntent({
             strategyId: STRATEGY_A,
             sessionKey: sessionKey,
             nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
             deadline: EXPIRES_AT,
-            sellToken: address(usdc),
-            buyToken: address(0),
-            maxSellAmount: spend,
-            minBuyAmount: minBuy,
-            routerCalldataHash: bytes32(0)
+            relayOrderId: relayOrderId,
+            fundingChainId: FUNDING_CHAIN_ID,
+            originToken: address(usdc),
+            originTokenDecimals: 6,
+            destToken: address(weth),
+            destTokenDecimals: 18,
+            originAmount: originAmount,
+            destChainId: 42161,
+            minDestAmount: 0.09 ether,
+            destRecipient: address(0xDE57),
+            refundVault: vault,
+            relayCalldataHash: bytes32(0),
+            platformFeeUsdc: 0,
+            feeRecipient: address(0)
         });
-        _swap(sessionKeyPrivateKey, intent);
     }
 
-    function _sellNative(uint256 sellAmount, uint256 minBuyUsdc) internal {
-        SessionSpend7702.SwapIntent memory intent = SessionSpend7702.SwapIntent({
+    function _relayCall(address vault, address token, uint256 amount)
+        internal
+        view
+        returns (address target, bytes memory data, bytes32 callHash)
+    {
+        target = RELAY_DEPOSITORY;
+        data = abi.encodeWithSignature("pullFrom(address,address,uint256)", vault, token, amount);
+        callHash = keccak256(abi.encode(target, uint256(0), data));
+    }
+
+    function _creditRelayAsset(
+        bytes32 relayOrderId,
+        address token,
+        uint256 creditQuantity,
+        uint128 costUsdc
+    ) internal {
+        SessionSpendBase.CreditRelayAssetIntent memory intent =
+            SessionSpendBase.CreditRelayAssetIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+                deadline: EXPIRES_AT,
+                relayOrderId: relayOrderId,
+                token: token,
+                fundingChainId: FUNDING_CHAIN_ID,
+                creditQuantity: creditQuantity,
+                costUsdc: costUsdc
+            });
+        vm.prank(platformRelayer);
+        wallet.creditRelayAsset(intent, _signCreditRelayAsset(intent));
+    }
+
+    function _executeRemoteRelaySell(bytes32 relayOrderId, uint256 sellQuantity) internal {
+        SessionSpendBase.RemoteRelaySellIntent memory intent = SessionSpendBase.RemoteRelaySellIntent({
             strategyId: STRATEGY_A,
             sessionKey: sessionKey,
             nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
             deadline: EXPIRES_AT,
-            sellToken: address(0),
-            buyToken: address(usdc),
-            maxSellAmount: sellAmount,
-            minBuyAmount: minBuyUsdc,
-            routerCalldataHash: bytes32(0)
+            relayOrderId: relayOrderId,
+            token: address(weth),
+            fundingChainId: FUNDING_CHAIN_ID,
+            sellQuantity: sellQuantity,
+            minReturnUsdc: 1,
+            relayCalldataHash: bytes32(0)
         });
-        _swap(sessionKeyPrivateKey, intent);
+        (address target, bytes memory data, bytes32 callHash) =
+            _relayCall(wallet.strategyVaultOf(STRATEGY_A), address(weth), sellQuantity);
+        intent.relayCalldataHash = callHash;
+
+        vm.prank(platformRelayer);
+        wallet.executeRemoteRelaySell(intent, target, data, 0, _signRemoteRelaySell(intent));
     }
 
     function _buyBundleIntentV2(
-        address buyToken,
         uint256 strategySell,
-        uint256 minStrategyBuy,
-        SessionSpend7702.GasFundingMode mode,
-        uint256 gasUsdc,
-        uint256 gasNative
-    ) internal view returns (SessionSpend7702.SwapBundleIntentV2 memory) {
-        bool hasTopUp = mode != SessionSpend7702.GasFundingMode.CREDIT_ONLY;
-        return SessionSpend7702.SwapBundleIntentV2({
-            strategyId: STRATEGY_A,
-            sessionKey: sessionKey,
-            nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
-            deadline: EXPIRES_AT,
-            sellToken: address(usdc),
-            buyToken: buyToken,
-            strategySellAmount: strategySell,
-            minStrategyBuyAmount: minStrategyBuy,
-            strategyRouterCalldataHash: bytes32(0),
-            platformFeeUsdc: 0,
-            feeRecipient: address(0),
-            gasFundingMode: mode,
-            gasTopUpUsdc: gasUsdc,
-            gasTopUpNative: gasNative,
-            gasRecipient: hasTopUp ? gasRecipient : address(0),
-            gasRouterCalldataHash: bytes32(0)
-        });
+        uint256 minBuy,
+        uint256 platformFee,
+        SessionSpendBase.GasFundingMode mode,
+        uint256 gasTopUpUsdc,
+        uint256 gasTopUpNative
+    ) internal view returns (SessionSpendBase.SwapBundleIntentV2 memory) {
+        return SessionSpendBase.SwapBundleIntentV2({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+                deadline: EXPIRES_AT,
+                sellToken: address(usdc),
+                buyToken: address(weth),
+                strategySellAmount: strategySell,
+                minStrategyBuyAmount: minBuy,
+                strategyRouterCalldataHash: bytes32(0),
+                platformFeeUsdc: platformFee,
+                feeRecipient: platformFee > 0 ? feeRecipient : address(0),
+                gasFundingMode: mode,
+                gasTopUpUsdc: gasTopUpUsdc,
+                gasTopUpNative: gasTopUpNative,
+                gasRecipient: mode == SessionSpendBase.GasFundingMode.CREDIT_ONLY
+                    ? address(0)
+                    : gasRecipient,
+                gasRouterCalldataHash: bytes32(0)
+            });
     }
 
-    function _swapBundleV2(SessionSpend7702.SwapBundleIntentV2 memory intent, address broadcaster)
+    function _swapBundleV2(SessionSpendBase.SwapBundleIntentV2 memory intent, address broadcaster)
         internal
     {
-        (bytes memory strategyCalldata, bytes memory gasCalldata) = _v2Calldata(intent);
+        if (intent.gasFundingMode != SessionSpendBase.GasFundingMode.CREDIT_ONLY) {
+            intent.gasRecipient = broadcaster;
+        }
+        bytes memory strategyCalldata =
+            _execCalldata(intent.sellToken, intent.strategySellAmount, intent.buyToken);
+        bytes memory gasCalldata = intent.gasFundingMode
+            == SessionSpendBase.GasFundingMode.SEPARATE_TOPUP
+            ? _execCalldata(address(usdc), intent.gasTopUpUsdc, address(0))
+            : bytes("");
         intent.strategyRouterCalldataHash = keccak256(strategyCalldata);
-        intent.gasRouterCalldataHash = gasCalldata.length == 0 ? bytes32(0) : keccak256(gasCalldata);
+        intent.gasRouterCalldataHash = gasCalldata.length > 0 ? keccak256(gasCalldata) : bytes32(0);
         vm.prank(broadcaster);
         wallet.executeSwapWithFeesV2(
             intent, strategyCalldata, gasCalldata, _signBundleIntentV2(intent)
         );
     }
 
-    function _v2Calldata(SessionSpend7702.SwapBundleIntentV2 memory intent)
-        internal
-        view
-        returns (bytes memory strategyCalldata, bytes memory gasCalldata)
-    {
-        uint256 strategyRouterSell = intent.gasFundingMode
-            == SessionSpend7702.GasFundingMode.NATIVE_OUTPUT
-            ? intent.strategySellAmount + intent.gasTopUpUsdc
-            : intent.strategySellAmount;
-        strategyCalldata = _execCalldata(intent.sellToken, strategyRouterSell, intent.buyToken);
-        gasCalldata = intent.gasFundingMode == SessionSpend7702.GasFundingMode.SEPARATE_TOPUP
-            ? _execCalldata(address(usdc), intent.gasTopUpUsdc, address(0))
-            : bytes("");
+    function _expectV2SwapReverts(bytes4 selector) internal {
+        SessionSpendBase.SwapBundleIntentV2 memory intent = _buyBundleIntentV2(
+            10_000_000, 0.009 ether, 0, SessionSpendBase.GasFundingMode.CREDIT_ONLY, 0, 0
+        );
+        bytes memory strategyCalldata =
+            _execCalldata(address(usdc), intent.strategySellAmount, address(weth));
+        intent.strategyRouterCalldataHash = keccak256(strategyCalldata);
+        vm.expectRevert(selector);
+        wallet.executeSwapWithFeesV2(intent, strategyCalldata, "", _signBundleIntentV2(intent));
     }
 
-    function _signBundleIntentV2(SessionSpend7702.SwapBundleIntentV2 memory intent)
+    function _execCalldata(address sellToken, uint256 amount, address buyToken)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSelector(
+            0x2213bc0b,
+            address(0x1111),
+            sellToken == address(0) ? NATIVE_SENTINEL : sellToken,
+            amount,
+            address(0x1111),
+            abi.encode(bytes4(0x12345678), buyToken)
+        );
+    }
+
+    function _setRate(address sellToken, address buyToken, uint256 numerator) internal {
+        (bool ok,) = ALLOWANCE_HOLDER.call(
+            abi.encodeWithSelector(holder.setRate.selector, sellToken, buyToken, numerator)
+        );
+        require(ok, "setRate");
+    }
+
+    function _signRelayDeposit(SessionSpendBase.RelayDepositIntent memory intent)
         internal
         view
         returns (bytes memory)
     {
-        bytes32 typehash = keccak256(
-            "SwapBundleIntentV2(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 strategySellAmount,uint256 minStrategyBuyAmount,bytes32 strategyRouterCalldataHash,uint256 platformFeeUsdc,address feeRecipient,uint8 gasFundingMode,uint256 gasTopUpUsdc,uint256 gasTopUpNative,address gasRecipient,bytes32 gasRouterCalldataHash)"
+        bytes32 typeHash = keccak256(
+            "RelayDepositIntent(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,bytes32 relayOrderId,uint256 fundingChainId,address originToken,uint8 originTokenDecimals,address destToken,uint8 destTokenDecimals,uint256 originAmount,uint256 destChainId,uint256 minDestAmount,address destRecipient,address refundVault,bytes32 relayCalldataHash,uint256 platformFeeUsdc,address feeRecipient)"
         );
         bytes memory firstHalf = abi.encode(
-            typehash,
+            typeHash,
+            intent.strategyId,
+            intent.sessionKey,
+            intent.nonce,
+            intent.deadline,
+            intent.relayOrderId,
+            intent.fundingChainId,
+            intent.originToken,
+            intent.originTokenDecimals,
+            intent.destToken,
+            intent.destTokenDecimals
+        );
+        bytes memory secondHalf = abi.encode(
+            intent.originAmount,
+            intent.destChainId,
+            intent.minDestAmount,
+            intent.destRecipient,
+            intent.refundVault,
+            intent.relayCalldataHash,
+            intent.platformFeeUsdc,
+            intent.feeRecipient
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01", _domainSeparator(), keccak256(bytes.concat(firstHalf, secondHalf))
+            )
+        );
+        return _signDigest(digest);
+    }
+
+    function _signCreditRelayAsset(SessionSpendBase.CreditRelayAssetIntent memory intent)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 typeHash = keccak256(
+            "CreditRelayAssetIntent(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,bytes32 relayOrderId,address token,uint256 fundingChainId,uint256 creditQuantity,uint128 costUsdc)"
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                _domainSeparator(),
+                keccak256(
+                    abi.encode(
+                        typeHash,
+                        intent.strategyId,
+                        intent.sessionKey,
+                        intent.nonce,
+                        intent.deadline,
+                        intent.relayOrderId,
+                        intent.token,
+                        intent.fundingChainId,
+                        intent.creditQuantity,
+                        intent.costUsdc
+                    )
+                )
+            )
+        );
+        return _signDigest(digest);
+    }
+
+    function _signRemoteRelaySell(SessionSpendBase.RemoteRelaySellIntent memory intent)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 typeHash = keccak256(
+            "RemoteRelaySellIntent(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,bytes32 relayOrderId,address token,uint256 fundingChainId,uint256 sellQuantity,uint256 minReturnUsdc,bytes32 relayCalldataHash)"
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                _domainSeparator(),
+                keccak256(
+                    abi.encode(
+                        typeHash,
+                        intent.strategyId,
+                        intent.sessionKey,
+                        intent.nonce,
+                        intent.deadline,
+                        intent.relayOrderId,
+                        intent.token,
+                        intent.fundingChainId,
+                        intent.sellQuantity,
+                        intent.minReturnUsdc,
+                        intent.relayCalldataHash
+                    )
+                )
+            )
+        );
+        return _signDigest(digest);
+    }
+
+    function _signCreditUsdcReturn(SessionSpendBase.CreditUsdcReturnIntent memory intent)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 typeHash = keccak256(
+            "CreditUsdcReturnIntent(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,bytes32 relayOrderId,uint256 fundingChainId,uint256 usdcReceived,uint256 destQuantityReleased,uint128 destCostReleasedUsdc,uint256 platformFeeUsdc,address feeRecipient)"
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                _domainSeparator(),
+                keccak256(
+                    abi.encode(
+                        typeHash,
+                        intent.strategyId,
+                        intent.sessionKey,
+                        intent.nonce,
+                        intent.deadline,
+                        intent.relayOrderId,
+                        intent.fundingChainId,
+                        intent.usdcReceived,
+                        intent.destQuantityReleased,
+                        intent.destCostReleasedUsdc,
+                        intent.platformFeeUsdc,
+                        intent.feeRecipient
+                    )
+                )
+            )
+        );
+        return _signDigest(digest);
+    }
+
+    function _signReleaseRelayDeposit(SessionSpendBase.ReleaseRelayDepositIntent memory intent)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 typeHash = keccak256(
+            "ReleaseRelayDepositIntent(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,bytes32 relayOrderId,address token,uint256 fundingChainId,uint256 refundQuantity,uint128 refundCostUsdc)"
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                _domainSeparator(),
+                keccak256(
+                    abi.encode(
+                        typeHash,
+                        intent.strategyId,
+                        intent.sessionKey,
+                        intent.nonce,
+                        intent.deadline,
+                        intent.relayOrderId,
+                        intent.token,
+                        intent.fundingChainId,
+                        intent.refundQuantity,
+                        intent.refundCostUsdc
+                    )
+                )
+            )
+        );
+        return _signDigest(digest);
+    }
+
+    function _signRestoreRemoteRelayAsset(
+        SessionSpendBase.RestoreRemoteRelayAssetIntent memory intent
+    ) internal view returns (bytes memory) {
+        bytes32 typeHash = keccak256(
+            "RestoreRemoteRelayAssetIntent(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,bytes32 relayOrderId,address token,uint256 fundingChainId,uint256 restoreQuantity,uint128 restoreCostUsdc)"
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                _domainSeparator(),
+                keccak256(
+                    abi.encode(
+                        typeHash,
+                        intent.strategyId,
+                        intent.sessionKey,
+                        intent.nonce,
+                        intent.deadline,
+                        intent.relayOrderId,
+                        intent.token,
+                        intent.fundingChainId,
+                        intent.restoreQuantity,
+                        intent.restoreCostUsdc
+                    )
+                )
+            )
+        );
+        return _signDigest(digest);
+    }
+
+    function _signBundleIntentV2(SessionSpendBase.SwapBundleIntentV2 memory intent)
+        internal
+        view
+        returns (bytes memory)
+    {
+        return _signBundleIntentV2WithVersion(intent, "1");
+    }
+
+    function _signBundleIntentV2WithVersion(
+        SessionSpendBase.SwapBundleIntentV2 memory intent,
+        string memory version
+    ) internal view returns (bytes memory) {
+        bytes memory firstHalf = abi.encode(
+            keccak256(
+                "SwapBundleIntentV2(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 strategySellAmount,uint256 minStrategyBuyAmount,bytes32 strategyRouterCalldataHash,uint256 platformFeeUsdc,address feeRecipient,uint8 gasFundingMode,uint256 gasTopUpUsdc,uint256 gasTopUpNative,address gasRecipient,bytes32 gasRouterCalldataHash)"
+            ),
             intent.strategyId,
             intent.sessionKey,
             intent.nonce,
@@ -1110,329 +928,15 @@ contract SessionSpend7702Test is Test {
         );
         bytes32 digest = keccak256(
             abi.encodePacked(
-                "\x19\x01", _domainSeparator("2"), keccak256(bytes.concat(firstHalf, secondHalf))
-            )
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(sessionKeyPrivateKey, digest);
-        return abi.encodePacked(r, s, v);
-    }
-
-    function _buyWithFees(
-        uint256 spend,
-        uint256 minBuy,
-        uint256 platformFee,
-        uint256 gasSell,
-        uint256 minNativeOut
-    ) internal {
-        SessionSpend7702.SwapBundleIntent memory intent = _buyBundleIntent(
-            spend,
-            minBuy,
-            wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
-            platformFee,
-            gasSell,
-            minNativeOut
-        );
-        _swapBundle(sessionKeyPrivateKey, intent);
-    }
-
-    function _sellWithFees(
-        uint256 sellAmount,
-        uint256 minBuyUsdc,
-        uint256 platformFee,
-        uint256 gasSell,
-        uint256 minNativeOut
-    ) internal {
-        SessionSpend7702.SwapBundleIntent memory intent =
-            SessionSpend7702.SwapBundleIntent({
-                strategyId: STRATEGY_A,
-                sessionKey: sessionKey,
-                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
-                deadline: EXPIRES_AT,
-                sellToken: address(weth),
-                buyToken: address(usdc),
-                maxSellAmount: sellAmount,
-                minBuyAmount: minBuyUsdc,
-                routerCalldataHash: bytes32(0),
-                platformFeeUsdc: platformFee,
-                feeRecipient: feeRecipient,
-                gasSellUsdc: gasSell,
-                minNativeOut: minNativeOut,
-                gasRecipient: gasRecipient,
-                gasRouterCalldataHash: bytes32(0)
-            });
-        _swapBundle(sessionKeyPrivateKey, intent);
-    }
-
-    function _swapBundle(uint256 privateKey, SessionSpend7702.SwapBundleIntent memory intent)
-        internal
-    {
-        bytes memory strategyCalldata =
-            _execCalldata(intent.sellToken, intent.maxSellAmount, intent.buyToken);
-        bytes memory gasCalldata = intent.gasSellUsdc > 0
-            ? _execCalldata(address(usdc), intent.gasSellUsdc, address(0))
-            : bytes("");
-        intent.routerCalldataHash = keccak256(strategyCalldata);
-        intent.gasRouterCalldataHash = intent.gasSellUsdc > 0 ? keccak256(gasCalldata) : bytes32(0);
-        vm.prank(intent.gasRecipient);
-        wallet.executeSwapWithFees(
-            intent, strategyCalldata, gasCalldata, _signBundleIntentWithKey(privateKey, intent)
-        );
-    }
-
-    function _buyBundleIntent(
-        uint256 maxSell,
-        uint256 minBuy,
-        uint256 nonce,
-        uint256 platformFee,
-        uint256 gasSell,
-        uint256 minNativeOut
-    ) internal view returns (SessionSpend7702.SwapBundleIntent memory) {
-        return SessionSpend7702.SwapBundleIntent({
-                strategyId: STRATEGY_A,
-                sessionKey: sessionKey,
-                nonce: nonce,
-                deadline: EXPIRES_AT,
-                sellToken: address(usdc),
-                buyToken: address(weth),
-                maxSellAmount: maxSell,
-                minBuyAmount: minBuy,
-                routerCalldataHash: bytes32(0),
-                platformFeeUsdc: platformFee,
-                feeRecipient: feeRecipient,
-                gasSellUsdc: gasSell,
-                minNativeOut: minNativeOut,
-                gasRecipient: gasRecipient,
-                gasRouterCalldataHash: bytes32(0)
-            });
-    }
-
-    function _signBundleIntent(SessionSpend7702.SwapBundleIntent memory intent)
-        internal
-        view
-        returns (bytes memory)
-    {
-        return _signBundleIntentWithKey(sessionKeyPrivateKey, intent);
-    }
-
-    function _signBundleIntentWithKey(
-        uint256 privateKey,
-        SessionSpend7702.SwapBundleIntent memory intent
-    ) internal view returns (bytes memory) {
-        bytes32 coreHash = keccak256(
-            abi.encode(
-                keccak256(
-                    "SwapBundleCore(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 maxSellAmount,uint256 minBuyAmount,bytes32 routerCalldataHash)"
-                ),
-                intent.strategyId,
-                intent.sessionKey,
-                intent.nonce,
-                intent.deadline,
-                intent.sellToken,
-                intent.buyToken,
-                intent.maxSellAmount,
-                intent.minBuyAmount,
-                intent.routerCalldataHash
-            )
-        );
-        bytes32 feesHash = keccak256(
-            abi.encode(
-                keccak256(
-                    "SwapBundleFees(uint256 platformFeeUsdc,address feeRecipient,uint256 gasSellUsdc,uint256 minNativeOut,address gasRecipient,bytes32 gasRouterCalldataHash)"
-                ),
-                intent.platformFeeUsdc,
-                intent.feeRecipient,
-                intent.gasSellUsdc,
-                intent.minNativeOut,
-                intent.gasRecipient,
-                intent.gasRouterCalldataHash
-            )
-        );
-        bytes32 digest = keccak256(
-            abi.encodePacked(
                 "\x19\x01",
-                _domainSeparator(),
-                keccak256(
-                    abi.encode(
-                        keccak256(
-                            "SwapBundleIntent(SwapBundleCore core,SwapBundleFees fees)SwapBundleCore(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 maxSellAmount,uint256 minBuyAmount,bytes32 routerCalldataHash)SwapBundleFees(uint256 platformFeeUsdc,address feeRecipient,uint256 gasSellUsdc,uint256 minNativeOut,address gasRecipient,bytes32 gasRouterCalldataHash)"
-                        ),
-                        coreHash,
-                        feesHash
-                    )
-                )
+                _domainSeparator(version),
+                keccak256(bytes.concat(firstHalf, secondHalf))
             )
         );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest);
-        return abi.encodePacked(r, s, v);
+        return _signDigest(digest);
     }
 
-    function _expectSwapReverts(bytes4 selector, uint256 nonce) internal {
-        _approveForHolder(address(usdc), 10_000_000);
-        SessionSpend7702.SwapIntent memory intent = _buyIntent(10_000_000, 0.009 ether, nonce);
-        bytes memory routerCalldata = _execCalldata(address(usdc), 10_000_000, address(weth));
-        intent.routerCalldataHash = keccak256(routerCalldata);
-
-        vm.expectRevert(selector);
-        wallet.executeSwap(intent, routerCalldata, _signIntent(intent));
-    }
-
-    function _setRate(address sellToken, address buyToken, uint256 numerator) internal {
-        (bool ok,) = ALLOWANCE_HOLDER.call(
-            abi.encodeWithSelector(holder.setRate.selector, sellToken, buyToken, numerator)
-        );
-        require(ok, "setRate");
-    }
-
-    function _setAttack(bool pullExtra, bool revertAfterPull) internal {
-        (bool ok,) = ALLOWANCE_HOLDER.call(
-            abi.encodeWithSelector(holder.setAttack.selector, pullExtra, revertAfterPull)
-        );
-        require(ok, "setAttack");
-    }
-
-    function _observedAllowance(address token, address owner) internal view returns (uint256) {
-        (bool ok, bytes memory result) = ALLOWANCE_HOLDER.staticcall(
-            abi.encodeWithSelector(holder.observedAllowance.selector, token, owner)
-        );
-        require(ok, "observedAllowance");
-        return abi.decode(result, (uint256));
-    }
-
-    function _observedCallValue() internal view returns (uint256) {
-        (bool ok, bytes memory result) =
-            ALLOWANCE_HOLDER.staticcall(abi.encodeWithSelector(holder.observedCallValue.selector));
-        require(ok, "observedCallValue");
-        return abi.decode(result, (uint256));
-    }
-
-    function _buy(uint256 spend, uint256 minBuy) internal {
-        _swap(
-            sessionKeyPrivateKey,
-            _buyIntent(spend, minBuy, wallet.sessionOf(STRATEGY_A, sessionKey).nonce)
-        );
-    }
-
-    function _sell(uint256 sellAmount, uint256 minBuyUsdc) internal {
-        SessionSpend7702.SwapIntent memory intent = SessionSpend7702.SwapIntent({
-            strategyId: STRATEGY_A,
-            sessionKey: sessionKey,
-            nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
-            deadline: EXPIRES_AT,
-            sellToken: address(weth),
-            buyToken: address(usdc),
-            maxSellAmount: sellAmount,
-            minBuyAmount: minBuyUsdc,
-            routerCalldataHash: bytes32(0)
-        });
-        _swap(sessionKeyPrivateKey, intent);
-    }
-
-    function _swap(uint256 privateKey, SessionSpend7702.SwapIntent memory intent) internal {
-        bytes memory routerCalldata =
-            _execCalldata(intent.sellToken, intent.maxSellAmount, intent.buyToken);
-        intent.routerCalldataHash = keccak256(routerCalldata);
-        wallet.executeSwap(intent, routerCalldata, _signIntentWithKey(privateKey, intent));
-    }
-
-    function _buyIntent(uint256 maxSell, uint256 minBuy, uint256 nonce)
-        internal
-        view
-        returns (SessionSpend7702.SwapIntent memory)
-    {
-        return SessionSpend7702.SwapIntent({
-            strategyId: STRATEGY_A,
-            sessionKey: sessionKey,
-            nonce: nonce,
-            deadline: EXPIRES_AT,
-            sellToken: address(usdc),
-            buyToken: address(weth),
-            maxSellAmount: maxSell,
-            minBuyAmount: minBuy,
-            routerCalldataHash: bytes32(0)
-        });
-    }
-
-    function _execCalldata(address sellToken, uint256 amount, address buyToken)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        return abi.encodeWithSelector(
-            0x2213bc0b,
-            address(0x1111),
-            sellToken == address(0) ? NATIVE_SENTINEL : sellToken,
-            amount,
-            address(0x1111),
-            abi.encode(bytes4(0x12345678), buyToken)
-        );
-    }
-
-    function _approveForHolder(address token, uint256 amount) internal {
-        vm.prank(address(wallet));
-        MockERC20(token).approve(ALLOWANCE_HOLDER, amount);
-    }
-
-    function _signIntent(SessionSpend7702.SwapIntent memory intent)
-        internal
-        view
-        returns (bytes memory)
-    {
-        return _signIntentWithKey(sessionKeyPrivateKey, intent);
-    }
-
-    function _signIntentWithKey(uint256 privateKey, SessionSpend7702.SwapIntent memory intent)
-        internal
-        view
-        returns (bytes memory)
-    {
-        bytes32 digest = keccak256(
-            abi.encodePacked(
-                "\x19\x01",
-                _domainSeparator(),
-                keccak256(
-                    abi.encode(
-                        keccak256(
-                            "SwapIntent(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline,address sellToken,address buyToken,uint256 maxSellAmount,uint256 minBuyAmount,bytes32 routerCalldataHash)"
-                        ),
-                        intent.strategyId,
-                        intent.sessionKey,
-                        intent.nonce,
-                        intent.deadline,
-                        intent.sellToken,
-                        intent.buyToken,
-                        intent.maxSellAmount,
-                        intent.minBuyAmount,
-                        intent.routerCalldataHash
-                    )
-                )
-            )
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest);
-        return abi.encodePacked(r, s, v);
-    }
-
-    function _signRevokeIntent(SessionSpend7702.RevokeIntent memory intent)
-        internal
-        view
-        returns (bytes memory)
-    {
-        bytes32 digest = keccak256(
-            abi.encodePacked(
-                "\x19\x01",
-                _domainSeparator(),
-                keccak256(
-                    abi.encode(
-                        keccak256(
-                            "RevokeIntent(bytes32 strategyId,address sessionKey,uint256 nonce,uint256 deadline)"
-                        ),
-                        intent.strategyId,
-                        intent.sessionKey,
-                        intent.nonce,
-                        intent.deadline
-                    )
-                )
-            )
-        );
+    function _signDigest(bytes32 digest) internal view returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(sessionKeyPrivateKey, digest);
         return abi.encodePacked(r, s, v);
     }

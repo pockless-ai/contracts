@@ -1,36 +1,52 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { decodeFunctionData, hashTypedData, keccak256 } from "viem"
+import { decodeFunctionData, getCreate2Address, hashTypedData, keccak256 } from "viem"
 
 import {
   EVM_NATIVE_TOKEN,
   GasFundingMode,
   SESSION_SPEND_VERSION,
-  SESSION_SPEND_V2_VERSION,
-  SESSION_SPEND_V3_VERSION,
-  SESSION_SPEND_V4_VERSION,
   ZEROX_NATIVE_TOKEN,
+  encodeCreditRelayAsset,
   encodeCreditUsdcReturn,
   encodeExecuteRelayDeposit,
-  encodeExecuteSwap,
+  encodeExecuteRemoteRelaySell,
   encodeExecuteSwapWithFeesV2,
   encodeExecuteWalletRelaySwap,
+  encodeRecoverVaultSurplus,
+  encodeReleaseRelayDeposit,
+  encodeRestoreRemoteRelayAsset,
+  encodeSetPlatformRelayer,
   hashRelayCalldata,
+  creditRelayAssetIntentDomain,
+  creditRelayAssetIntentTypes,
   creditUsdcReturnIntentDomain,
   creditUsdcReturnIntentTypes,
+  normalizeRelayOrderId,
   relayDepositIntentDomain,
   relayDepositIntentTypes,
+  releaseRelayDepositIntentDomain,
+  releaseRelayDepositIntentTypes,
+  remoteRelaySellIntentDomain,
+  remoteRelaySellIntentTypes,
+  restoreRemoteRelayAssetIntentDomain,
+  restoreRemoteRelayAssetIntentTypes,
   sessionSpend7702Abi,
+  sessionSpendDomain,
+  strategyVaultAddress,
+  strategyVaultSalt,
   swapBundleIntentV2Domain,
   swapBundleIntentV2Types,
-  swapIntentDomain,
   walletRelaySwapIntentDomain,
   walletRelaySwapIntentTypes,
+  type CreditRelayAssetIntentMessage,
   type CreditUsdcReturnIntentMessage,
   type RelayDepositIntentMessage,
+  type RemoteRelaySellIntentMessage,
+  type ReleaseRelayDepositIntentMessage,
+  type RestoreRemoteRelayAssetIntentMessage,
   type SwapBundleIntentV2Message,
-  type SwapIntentMessage,
   type WalletRelaySwapIntentMessage,
 } from "../../src/evm/session-spend-7702"
 
@@ -40,24 +56,11 @@ const wallet = `0x${"33".repeat(20)}` as const
 const usdc = `0x${"44".repeat(20)}` as const
 const token = `0x${"55".repeat(20)}` as const
 const recipient = `0x${"66".repeat(20)}` as const
+const refundVault = `0x${"77".repeat(20)}` as const
 const calldata = "0x2213bc0b00" as const
 const calldataHash = keccak256(calldata)
-const signature = `0x${"77".repeat(65)}` as const
-
-function v1Intent(overrides: Partial<SwapIntentMessage>): SwapIntentMessage {
-  return {
-    strategyId,
-    sessionKey,
-    nonce: 0n,
-    deadline: 2_000_000_000n,
-    sellToken: usdc,
-    buyToken: token,
-    maxSellAmount: 100_000_000n,
-    minBuyAmount: 1n,
-    routerCalldataHash: calldataHash,
-    ...overrides,
-  }
-}
+const signature = `0x${"88".repeat(65)}` as const
+const relayOrderId = `0x${"99".repeat(32)}` as const
 
 function v2Intent(
   overrides: Partial<SwapBundleIntentV2Message>
@@ -83,37 +86,22 @@ function v2Intent(
   }
 }
 
-test("V1 ABI encodes native buys and sells with address zero intents", () => {
-  assert.equal(ZEROX_NATIVE_TOKEN, "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE")
-  for (const intent of [
-    v1Intent({ buyToken: EVM_NATIVE_TOKEN }),
-    v1Intent({ sellToken: EVM_NATIVE_TOKEN, buyToken: usdc }),
-  ]) {
-    const encoded = encodeExecuteSwap({
-      intent,
-      routerCalldata: calldata,
-      sessionSignature: signature,
-    })
-    const decoded = decodeFunctionData({
-      abi: sessionSpend7702Abi,
-      data: encoded,
-    })
-    assert.equal(decoded.functionName, "executeSwap")
-    assert.deepEqual(decoded.args?.[0], intent)
-  }
-})
-
-test("V1 and V2 use distinct EIP-712 domain versions", () => {
+test("all EIP-712 domains use version 1", () => {
   assert.equal(SESSION_SPEND_VERSION, "1")
-  assert.equal(SESSION_SPEND_V2_VERSION, "2")
-  assert.equal(
-    swapIntentDomain({ chainId: 1, verifyingContract: wallet }).version,
-    "1"
-  )
-  assert.equal(
-    swapBundleIntentV2Domain({ chainId: 1, verifyingContract: wallet }).version,
-    "2"
-  )
+  const domainInput = { chainId: 1, verifyingContract: wallet }
+  for (const domain of [
+    sessionSpendDomain(domainInput),
+    swapBundleIntentV2Domain(domainInput),
+    relayDepositIntentDomain(domainInput),
+    creditRelayAssetIntentDomain(domainInput),
+    remoteRelaySellIntentDomain(domainInput),
+    creditUsdcReturnIntentDomain(domainInput),
+    releaseRelayDepositIntentDomain(domainInput),
+    restoreRemoteRelayAssetIntentDomain(domainInput),
+    walletRelaySwapIntentDomain(domainInput),
+  ]) {
+    assert.equal(domain.version, "1")
+  }
 })
 
 test("V2 typed data and ABI pin every gas funding mode", () => {
@@ -167,8 +155,8 @@ test("V2 typed data and ABI pin every gas funding mode", () => {
   assert.equal(hashes.size, 3)
 })
 
-test("V3 relay deposit and credit return use domain version 3", () => {
-  const relayTarget = `0x${"88".repeat(20)}` as const
+test("relay deposit and credit return encode expanded intent fields", () => {
+  const relayTarget = `0x${"aa".repeat(20)}` as const
   const relayCalldata = "0x1234" as const
   const relayValue = 0n
   const relayHash = hashRelayCalldata({
@@ -181,12 +169,17 @@ test("V3 relay deposit and credit return use domain version 3", () => {
     sessionKey,
     nonce: 0n,
     deadline: 2_000_000_000n,
+    relayOrderId,
+    fundingChainId: 1n,
     originToken: usdc,
+    originTokenDecimals: 6,
+    destToken: token,
+    destTokenDecimals: 18,
     originAmount: 100_000_000n,
     destChainId: 42161n,
-    destToken: token,
     minDestAmount: 1n,
     destRecipient: recipient,
+    refundVault,
     relayCalldataHash: relayHash,
     platformFeeUsdc: 500_000n,
     feeRecipient: recipient,
@@ -196,17 +189,15 @@ test("V3 relay deposit and credit return use domain version 3", () => {
     sessionKey,
     nonce: 1n,
     deadline: 2_000_000_000n,
+    relayOrderId,
+    fundingChainId: 42161n,
     usdcReceived: 95_000_000n,
-    costReleasedUsdc: 100_000_000n,
+    destQuantityReleased: 1_000_000n,
+    destCostReleasedUsdc: 100_000_000n,
     platformFeeUsdc: 500_000n,
     feeRecipient: recipient,
   }
 
-  assert.equal(SESSION_SPEND_V3_VERSION, "3")
-  assert.equal(
-    relayDepositIntentDomain({ chainId: 1, verifyingContract: wallet }).version,
-    "3"
-  )
   assert.equal(
     hashTypedData({
       domain: relayDepositIntentDomain({
@@ -258,16 +249,101 @@ test("V3 relay deposit and credit return use domain version 3", () => {
   assert.deepEqual(creditDecoded.args?.[0], creditIntent)
 })
 
-test("V4 wallet relay swap uses domain version 4", () => {
-  assert.equal(SESSION_SPEND_V4_VERSION, "4")
+test("relay lifecycle encoders match ABI", () => {
+  const creditAssetIntent: CreditRelayAssetIntentMessage = {
+    strategyId,
+    sessionKey,
+    nonce: 2n,
+    deadline: 2_000_000_000n,
+    relayOrderId,
+    token,
+    fundingChainId: 42161n,
+    creditQuantity: 1_000_000n,
+    costUsdc: 50_000_000n,
+  }
+  const remoteSellIntent: RemoteRelaySellIntentMessage = {
+    strategyId,
+    sessionKey,
+    nonce: 3n,
+    deadline: 2_000_000_000n,
+    relayOrderId,
+    token,
+    fundingChainId: 42161n,
+    sellQuantity: 1_000_000n,
+    minReturnUsdc: 90_000_000n,
+    relayCalldataHash: calldataHash,
+  }
+  const releaseIntent: ReleaseRelayDepositIntentMessage = {
+    strategyId,
+    sessionKey,
+    nonce: 4n,
+    deadline: 2_000_000_000n,
+    relayOrderId,
+    token: usdc,
+    fundingChainId: 1n,
+    refundQuantity: 100_000_000n,
+    refundCostUsdc: 100_000_000n,
+  }
+  const restoreIntent: RestoreRemoteRelayAssetIntentMessage = {
+    strategyId,
+    sessionKey,
+    nonce: 5n,
+    deadline: 2_000_000_000n,
+    relayOrderId,
+    token,
+    fundingChainId: 42161n,
+    restoreQuantity: 1_000_000n,
+    restoreCostUsdc: 50_000_000n,
+  }
+
+  for (const [encoded, name] of [
+    [encodeCreditRelayAsset({ intent: creditAssetIntent, sessionSignature: signature }), "creditRelayAsset"],
+    [
+      encodeExecuteRemoteRelaySell({
+        intent: remoteSellIntent,
+        relayTarget: recipient,
+        relayCalldata: calldata,
+        relayValue: 0n,
+        sessionSignature: signature,
+      }),
+      "executeRemoteRelaySell",
+    ],
+    [encodeReleaseRelayDeposit({ intent: releaseIntent, sessionSignature: signature }), "releaseRelayDeposit"],
+    [encodeRestoreRemoteRelayAsset({ intent: restoreIntent, sessionSignature: signature }), "restoreRemoteRelayAsset"],
+    [encodeSetPlatformRelayer(recipient), "setPlatformRelayer"],
+    [
+      encodeRecoverVaultSurplus({
+        strategyId,
+        token: usdc,
+        recipient,
+        amount: 1n,
+      }),
+      "recoverVaultSurplus",
+    ],
+  ] as const) {
+    const decoded = decodeFunctionData({
+      abi: sessionSpend7702Abi,
+      data: encoded,
+    })
+    assert.equal(decoded.functionName, name)
+  }
+
   assert.equal(
-    walletRelaySwapIntentDomain({ chainId: 1, verifyingContract: wallet }).version,
-    "4"
+    hashTypedData({
+      domain: creditRelayAssetIntentDomain({
+        chainId: 1,
+        verifyingContract: wallet,
+      }),
+      types: creditRelayAssetIntentTypes(),
+      primaryType: "CreditRelayAssetIntent",
+      message: creditAssetIntent,
+    }).length,
+    66
   )
 })
 
-test("encodeExecuteWalletRelaySwap encodes executeWalletRelaySwap", () => {
-  const relayTarget = `0x${"88".repeat(20)}` as const
+test("wallet relay swap uses relayOrderId", () => {
+  const relayTarget = `0x${"bb".repeat(20)}` as const
   const relayCalldata = "0x1234" as const
   const relayValue = 0n
   const relayHash = hashRelayCalldata({
@@ -282,7 +358,7 @@ test("encodeExecuteWalletRelaySwap encodes executeWalletRelaySwap", () => {
     sellAmount: 100_000_000n,
     destRecipient: recipient,
     relayCalldataHash: relayHash,
-    relayRequestId: `0x${"99".repeat(32)}`,
+    relayOrderId,
     platformFeeUsdc: 500_000n,
     feeRecipient: recipient,
   }
@@ -313,14 +389,31 @@ test("encodeExecuteWalletRelaySwap encodes executeWalletRelaySwap", () => {
   })
   assert.equal(decoded.functionName, "executeWalletRelaySwap")
   assert.deepEqual(decoded.args?.[0], intent)
-  assert.equal(decoded.args?.[1], relayTarget)
-  assert.equal(decoded.args?.[2], relayCalldata)
-  assert.equal(decoded.args?.[3], relayValue)
-  assert.equal(decoded.args?.[4], signature)
+})
+
+test("normalizeRelayOrderId validates 32-byte hex order ids", () => {
+  assert.equal(normalizeRelayOrderId(relayOrderId), relayOrderId)
+  assert.throws(() => normalizeRelayOrderId("not-an-order-id"))
+})
+
+test("strategyVaultAddress matches CREATE2 derivation", () => {
+  const initCodeHash = `0x${"cc".repeat(32)}` as const
+  assert.equal(
+    strategyVaultAddress({
+      sessionSpend: wallet,
+      strategyId,
+      initCodeHash,
+    }),
+    getCreate2Address({
+      bytecodeHash: initCodeHash,
+      from: wallet,
+      salt: strategyVaultSalt(strategyId),
+    })
+  )
 })
 
 test("hashRelayCalldata hashes relay target, value, and calldata", () => {
-  const relayTarget = `0x${"aa".repeat(20)}` as const
+  const relayTarget = `0x${"dd".repeat(20)}` as const
   const relayCalldata = "0xdeadbeef" as const
   const relayValue = 42n
   const hash = hashRelayCalldata({ relayTarget, relayValue, relayCalldata })
@@ -333,4 +426,8 @@ test("hashRelayCalldata hashes relay target, value, and calldata", () => {
       relayCalldata: "0xbeef",
     })
   )
+})
+
+test("ZEROX native token constant is pinned", () => {
+  assert.equal(ZEROX_NATIVE_TOKEN, "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE")
 })
