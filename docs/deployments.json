@@ -161,7 +161,7 @@
       "txHash": "0x0432292d2c3b43e7ebb8292ded5fd8596783e39ad65db0bb689f9cb6cd34c064",
       "codeHash": "0x8c877799152e5f2deccd59b495db52cdc15f7dc334eb7e08c4be69c8978c83a5",
       "verifiedAt": "2026-08-30T22:33:15.172Z",
-      "releaseCommit": "f58cca964cbc0efacd62d81108f9e8f2249eae6b",
+      "releaseCommit": "ec0a0aff7b09bf1742e9d1108f07981ba95bd452",
       "releases": [
         {
           "implementation": "0x92237a6819A07d9373303Ff5bb2835b9916994C4",
@@ -242,7 +242,7 @@
       "status": "deployed",
       "programHash": "bcc4d45ed526c5fbd3ebaaf13be69b321a8e2e284b2a95bff5db57bdc3f84fed",
       "verifiedAt": "2026-08-30T22:39:58.297Z",
-      "releaseCommit": "f58cca964cbc0efacd62d81108f9e8f2249eae6b",
+      "releaseCommit": "ec0a0aff7b09bf1742e9d1108f07981ba95bd452",
       "releases": [
         {
           "programId": "3yxrhjrQhqojzQ7CuzKKjiiNsTjRcoqXMJ7q694Xi5To",
