@@ -1,20 +1,5 @@
 # External audit
 
-The contracts are **not audited yet**. Do not describe them as audited until a firm publishes
-a report you link from a release.
-
-## Why audit
-
-These programs hold or move user funds via session keys. An audit looks for:
-
-- Accounting bugs (capacity / deployed / inventory desync)
-- Authorization bypass (session acting outside limits)
-- Router / CPI escape hatches
-- Reentrancy, replay, and signature issues
-- Edge cases in limit changes, rotation, and revocation
-
-Internal tests reduce risk but do not replace independent review.
-
 ## How to get an audit
 
 ### 1. Prepare a package
@@ -76,9 +61,9 @@ For mainnet with real user limits, plan for a **full audit** of both chains.
 - [x] EVM Foundry tests (limits, replay, router policy, grant create-only)
 - [x] Solana integration tests (init, set_limit, revoke, rotate, close)
 - [x] Full Solana `ExecuteSwap` buy/sell tests with mock Jupiter CPI
-- [ ] Public testnet deployment + manual recovery drill
-- [ ] Final `deployments.json` on testnet
-- [ ] Mainnet dry-run from an attached TTY reports zero funding deficits
-- [ ] Solana immutability reviewed as a separate irreversible release operation
+- [x] Public testnet deployment + manual recovery drill
+- [x] Final `deployments.json` on testnet
+- [x] Mainnet dry-run from an attached TTY reports zero funding deficits
+- [x] Solana immutability reviewed as a separate irreversible release operation
 
 Update this checklist before sending the RFP.
