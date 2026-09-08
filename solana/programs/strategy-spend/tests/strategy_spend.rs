@@ -352,8 +352,10 @@ impl TestHarness {
         );
         if legacy_v1_wallet {
             let wallet = wallet_pda(&program_id, &owner.pubkey());
-            let (_, authority_bump) =
-                Pubkey::find_program_address(&[AUTHORITY_SEED, owner.pubkey().as_ref()], &program_id);
+            let (_, authority_bump) = Pubkey::find_program_address(
+                &[AUTHORITY_SEED, owner.pubkey().as_ref()],
+                &program_id,
+            );
             let mut data = vec![WalletConfig::LEGACY_V1_VERSION];
             data.extend_from_slice(owner.pubkey().as_ref());
             data.extend_from_slice(usdc_mint.as_ref());
