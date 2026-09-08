@@ -253,6 +253,16 @@ struct TestHarness {
 
 impl TestHarness {
     async fn start() -> (Self, solana_program_test::BanksClient, Keypair) {
+        Self::start_with(false).await
+    }
+
+    async fn start_with_legacy_v1_wallet() -> (Self, solana_program_test::BanksClient, Keypair) {
+        Self::start_with(true).await
+    }
+
+    async fn start_with(
+        legacy_v1_wallet: bool,
+    ) -> (Self, solana_program_test::BanksClient, Keypair) {
         let program_id = Pubkey::new_unique();
         let jupiter_program = Pubkey::new_unique();
         let owner = Keypair::new();
@@ -340,6 +350,28 @@ impl TestHarness {
                 rent_epoch: 0,
             },
         );
+        if legacy_v1_wallet {
+            let wallet = wallet_pda(&program_id, &owner.pubkey());
+            let (_, authority_bump) =
+                Pubkey::find_program_address(&[AUTHORITY_SEED, owner.pubkey().as_ref()], &program_id);
+            let mut data = vec![WalletConfig::LEGACY_V1_VERSION];
+            data.extend_from_slice(owner.pubkey().as_ref());
+            data.extend_from_slice(usdc_mint.as_ref());
+            data.extend_from_slice(spl_token::id().as_ref());
+            data.extend_from_slice(spl_associated_token_account::id().as_ref());
+            data.extend_from_slice(jupiter_program.as_ref());
+            data.push(authority_bump);
+            program_test.add_account(
+                wallet,
+                Account {
+                    lamports: 2_018_400,
+                    data,
+                    owner: program_id,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            );
+        }
         program_test.add_account(
             relayer.pubkey(),
             Account {
@@ -835,6 +867,36 @@ async fn init_wallet_and_strategy() {
     assert_eq!(state.limit_usdc, LIMIT_USDC);
     assert_eq!(state.capacity_usdc, LIMIT_USDC);
     assert_eq!(state.deployed_usdc, 0);
+}
+
+#[tokio::test]
+async fn init_wallet_migrates_legacy_v1_account() {
+    let (h, mut banks_client, payer) = TestHarness::start_with_legacy_v1_wallet().await;
+    send(
+        &mut banks_client,
+        &payer,
+        &[&payer, &h.owner],
+        h.init_wallet_ix(),
+    )
+    .await
+    .unwrap();
+    send(
+        &mut banks_client,
+        &payer,
+        &[&payer, &h.owner],
+        h.init_strategy_ix(),
+    )
+    .await
+    .unwrap();
+
+    let wallet = wallet_pda(&h.program_id, &h.owner.pubkey());
+    let wallet_account = banks_client.get_account(wallet).await.unwrap().unwrap();
+    let config = WalletConfig::try_from_slice(&wallet_account.data).unwrap();
+    assert_eq!(wallet_account.data.len(), WalletConfig::LEN);
+    assert_eq!(config.owner, h.owner.pubkey());
+    assert_eq!(config.usdc_mint, h.usdc_mint);
+    assert_eq!(config.jupiter_program, h.jupiter_program);
+    assert_eq!(config.platform_relayer, h.relayer.pubkey());
 }
 
 #[tokio::test]

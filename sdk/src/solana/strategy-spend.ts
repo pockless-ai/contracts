@@ -1,6 +1,10 @@
 import { PublicKey } from "@solana/web3.js"
 import { keccak256, toBytes, type Hex } from "viem"
 
+/** Current on-chain `WalletConfig` size. Legacy v1 accounts are 162 bytes. */
+export const WALLET_CONFIG_LEN = 225
+export const STRATEGY_ACCOUNT_LEN = 138
+
 export const WALLET_SEED = Buffer.from("wallet")
 export const STRATEGY_SEED = Buffer.from("strategy")
 export const VAULT_SEED = Buffer.from("vault")

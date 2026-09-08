@@ -263,21 +263,22 @@ fn init_wallet(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     if wallet.key != &expected_wallet {
         return Err(StrategySpendError::InvalidAccount.into());
     }
-    if !wallet.data_is_empty() {
-        return Err(StrategySpendError::AlreadyInitialized.into());
-    }
 
     let (_, authority_bump) =
         Pubkey::find_program_address(&[AUTHORITY_SEED, owner.key.as_ref()], program_id);
 
-    create_pda(
-        owner,
-        wallet,
-        system_program_account,
-        program_id,
-        WalletConfig::LEN,
-        &[WALLET_SEED, owner.key.as_ref(), &[wallet_bump]],
-    )?;
+    if wallet.data_is_empty() {
+        create_pda(
+            owner,
+            wallet,
+            system_program_account,
+            program_id,
+            WalletConfig::LEN,
+            &[WALLET_SEED, owner.key.as_ref(), &[wallet_bump]],
+        )?;
+    } else {
+        migrate_wallet_account(program_id, owner, wallet, system_program_account)?;
+    }
 
     WalletConfig {
         owner: *owner.key,
@@ -3536,6 +3537,53 @@ fn normalize_from_mint_atomic(amount: u64, mint: &AccountInfo) -> Result<u64, Pr
     amount
         .checked_div(factor)
         .ok_or_else(|| StrategySpendError::Overflow.into())
+}
+
+fn migrate_wallet_account<'a>(
+    program_id: &Pubkey,
+    owner: &AccountInfo<'a>,
+    wallet: &AccountInfo<'a>,
+    system_program_account: &AccountInfo<'a>,
+) -> ProgramResult {
+    if wallet.owner != program_id {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    let data = wallet.data.borrow();
+    if data.len() == WalletConfig::LEN {
+        if WalletConfig::try_from_slice(&data)
+            .ok()
+            .is_some_and(|config| config.owner == *owner.key)
+        {
+            return Err(StrategySpendError::AlreadyInitialized.into());
+        }
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    if !is_legacy_v1_wallet(&data, owner.key) {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    drop(data);
+
+    let rent = Rent::get()?.minimum_balance(WalletConfig::LEN);
+    let deficit = rent.saturating_sub(wallet.lamports());
+    if deficit > 0 {
+        invoke(
+            &system_instruction::transfer(owner.key, wallet.key, deficit),
+            &[
+                owner.clone(),
+                wallet.clone(),
+                system_program_account.clone(),
+            ],
+        )?;
+    }
+    wallet.realloc(WalletConfig::LEN, false)?;
+    Ok(())
+}
+
+fn is_legacy_v1_wallet(data: &[u8], owner: &Pubkey) -> bool {
+    if data.len() != WalletConfig::LEGACY_V1_LEN || data[0] != WalletConfig::LEGACY_V1_VERSION {
+        return false;
+    }
+    data.get(1..33).is_some_and(|bytes| bytes == owner.as_ref())
 }
 
 fn create_pda<'a>(

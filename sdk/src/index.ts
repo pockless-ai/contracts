@@ -62,6 +62,8 @@ export {
 } from "./evm/session-spend-7702"
 
 export {
+  WALLET_CONFIG_LEN,
+  STRATEGY_ACCOUNT_LEN,
   WALLET_SEED,
   STRATEGY_SEED,
   VAULT_SEED,

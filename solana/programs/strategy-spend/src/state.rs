@@ -36,6 +36,9 @@ pub struct WalletConfig {
 
 impl WalletConfig {
     pub const LEN: usize = 32 + 32 + 32 + 32 + 32 + 32 + 32 + 1;
+    /// Pre-relay layout: `version(1) + 5 pubkeys + authority_bump`.
+    pub const LEGACY_V1_LEN: usize = 1 + 32 + 32 + 32 + 32 + 32 + 1;
+    pub const LEGACY_V1_VERSION: u8 = 1;
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
