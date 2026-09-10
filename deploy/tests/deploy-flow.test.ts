@@ -11,7 +11,12 @@ import {
 } from "../src/command"
 import { loadDeployEnv, resolveSolanaKeypairs } from "../src/env"
 import { loadTargets } from "../src/config"
-import { runDeploy, waitForRuntimeCode } from "../src/deploy"
+import {
+  evmVerificationFromForgeOutput,
+  isExplorerVerificationPending,
+  runDeploy,
+  waitForRuntimeCode,
+} from "../src/deploy"
 import { mergeDeployments } from "../src/deployments"
 import {
   assertResumeCompatible,
@@ -224,6 +229,21 @@ test("command construction never uses raw keys and redacts signer paths", () => 
   assert.deepEqual(
     redactArgs(["--etherscan-api-key", "secret-verifier-key"]),
     ["--etherscan-api-key", "<redacted>"]
+  )
+  const evmWithPassword = evmDeployArgs({
+    rpc: "https://example.test",
+    account: "release",
+    sender: testUsdc,
+    usdc: testUsdc,
+    password: "super-secret",
+  })
+  assert.equal(
+    evmWithPassword[evmWithPassword.indexOf("--password") + 1],
+    "super-secret"
+  )
+  assert.equal(
+    redactArgs(evmWithPassword)[evmWithPassword.indexOf("--password") + 1],
+    "<redacted>"
   )
   const solana = solanaDeployArgs({
     artifact: "program.so",
@@ -629,4 +649,99 @@ test("upgrade advances an incomplete release without replacing unchanged complet
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test("remaining targets deploy in parallel and keep going after one failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pockless-parallel-deploy-"))
+  const manifestPath = join(directory, "testnet.json")
+  const logs: string[] = []
+  let started = 0
+  let release = () => undefined
+  const bothStarted = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const overlapping = new Set<string>()
+  try {
+    await assert.rejects(
+      runDeploy(
+        {
+          environment: "testnet",
+          dryRun: false,
+          fundingCheck: false,
+          skipTests: true,
+          skipSolanaVerification: true,
+          operation: "upgrade",
+          forceBroadcast: false,
+          safetyBufferPercent: 20,
+          source: { BASE_SEPOLIA_USDC_ADDRESS: testUsdc },
+        },
+        {
+          run: async () => {
+            throw new Error("command boundary must not run")
+          },
+          log: (message) => logs.push(message),
+          setup: async () => ({ releaseCommit: "parallel-commit" }),
+          preflight: async (target) => ({ artifactHash: `hash-${target.key}` }),
+          deployTarget: async (target) => {
+            started += 1
+            overlapping.add(target.name)
+            if (started === 2) release()
+            await bothStarted
+            if (target.family === "solana") {
+              throw new Error("injected solana failure")
+            }
+            return {
+              family: target.family,
+              name: target.name,
+              status: "complete",
+              artifactHash: `hash-${target.key}`,
+              address: testUsdc,
+              txHash: `0x${"1".repeat(64)}`,
+              codeHash: `0x${"2".repeat(64)}`,
+            }
+          },
+          manifestPath,
+        }
+      ),
+      /injected solana failure/
+    )
+    assert.ok(
+      logs.some((message) =>
+        message.includes("Deploying remaining networks in parallel:")
+      )
+    )
+    assert.equal(overlapping.size, 2)
+    const manifest = await loadManifest(manifestPath)
+    assert.equal(manifest?.targets["84532"]?.status, "complete")
+    assert.equal(manifest?.targets.devnet?.status, "failed")
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("explorer verification queue timeouts are pending, not failed deploys", () => {
+  assert.equal(
+    evmVerificationFromForgeOutput(
+      "Submitted contract for verification:\nResponse: `OK`\nDetails: `Pending in queue`"
+    ).verificationStatus,
+    "pending"
+  )
+  assert.equal(
+    evmVerificationFromForgeOutput("Pass - Verified").verificationStatus,
+    "verified"
+  )
+  assert.equal(
+    evmVerificationFromForgeOutput("Already Verified").verificationStatus,
+    "verified"
+  )
+  assert.equal(
+    isExplorerVerificationPending(
+      new Error("Warning: Verification is still pending...\nDetails: `Pending in queue`")
+    ),
+    true
+  )
+  assert.equal(
+    isExplorerVerificationPending(new Error("Compiler version mismatch")),
+    false
+  )
 })

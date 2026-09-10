@@ -3,6 +3,54 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
+export async function readHiddenInput(prompt: string) {
+  const stdin = process.stdin
+  const stdout = process.stdout
+  if (!stdin.isTTY || !stdout.isTTY) {
+    throw new Error(
+      "EVM_FOUNDRY_PASSWORD is required when stdin is not a TTY"
+    )
+  }
+  stdout.write(prompt)
+  const wasRaw = stdin.isRaw
+  stdin.setRawMode(true)
+  stdin.resume()
+  stdin.setEncoding("utf8")
+  return new Promise<string>((resolve, reject) => {
+    let value = ""
+    const finish = (error?: Error, result?: string) => {
+      stdin.off("data", onData)
+      stdin.setRawMode(Boolean(wasRaw))
+      stdin.pause()
+      stdout.write("\n")
+      if (error) reject(error)
+      else resolve(result ?? "")
+    }
+    const onData = (chunk: string) => {
+      for (const char of chunk) {
+        if (char === "\n" || char === "\r") {
+          if (!value) {
+            finish(new Error("keystore password is required"))
+            return
+          }
+          finish(undefined, value)
+          return
+        }
+        if (char === "\u0003") {
+          finish(new Error("keystore password prompt cancelled"))
+          return
+        }
+        if (char === "\u007f" || char === "\b") {
+          value = value.slice(0, -1)
+          continue
+        }
+        if (char >= " ") value += char
+      }
+    }
+    stdin.on("data", onData)
+  })
+}
+
 export type CommandResult = { stdout: string; stderr: string; code: number }
 export type CommandOptions = {
   cwd?: string
@@ -122,6 +170,7 @@ export function evmDeployArgs(input: {
   account: string
   sender: string
   usdc: string
+  password?: string
 }) {
   return [
     "create",
@@ -132,6 +181,7 @@ export function evmDeployArgs(input: {
     input.rpc,
     "--account",
     input.account,
+    ...(input.password ? (["--password", input.password] as const) : []),
     "--from",
     input.sender,
     "--broadcast",

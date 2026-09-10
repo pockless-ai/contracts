@@ -24,6 +24,7 @@ import {
 import {
   checked,
   evmDeployArgs,
+  readHiddenInput,
   runCommand,
   solanaDeployArgs,
   type RunCommand,
@@ -34,6 +35,7 @@ import {
   type Environment,
   type EvmTarget,
   type SolanaTarget,
+  type Target,
 } from "./config"
 import { mergeDeployments } from "./deployments"
 import {
@@ -63,7 +65,9 @@ const solanaArtifact = join(solanaRoot, "target/deploy/strategy_spend.so")
 // UpgradeableLoaderState::ProgramData: enum tag + slot + authority option/pubkey.
 const upgradeableLoaderProgramDataMetadataBytes = 45
 const abi = parseAbi(["constructor(address usdcToken_)"])
-let derivedFoundryAccount: { account: string; address: Address } | undefined
+let derivedFoundryAccount:
+  | { account: string; address: Address; password: string }
+  | undefined
 
 type FundingCheck =
   | {
@@ -99,8 +103,25 @@ export type DeployDependencies = {
   preflight?: (
     target: EvmTarget | SolanaTarget
   ) => Promise<{ artifactHash: string }>
+  deployTarget?: (
+    target: Target,
+    existing?: TargetState
+  ) => Promise<TargetState>
   manifestPath?: string
+  deploymentsPath?: string
   retryDelayMs?: number
+}
+
+function createAsyncQueue() {
+  let tail = Promise.resolve()
+  return function enqueue<T>(task: () => Promise<T>) {
+    const run = tail.then(task)
+    tail = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
 }
 
 function required(source: Record<string, string | undefined>, key: string) {
@@ -272,22 +293,42 @@ async function runStage<T>(
   }
 }
 
+let foundryPasswordPrompt: Promise<string> | undefined
+
+async function resolveFoundryPassword(
+  source: Record<string, string | undefined>
+) {
+  const fromEnv = source.EVM_FOUNDRY_PASSWORD?.trim()
+  if (fromEnv) return fromEnv
+  if (derivedFoundryAccount?.password) return derivedFoundryAccount.password
+  foundryPasswordPrompt ??= readHiddenInput("Enter keystore password: ")
+  return foundryPasswordPrompt
+}
+
 async function foundryAccount(
   run: RunCommand,
   source: Record<string, string | undefined>
 ) {
   const account = required(source, "EVM_FOUNDRY_ACCOUNT")
-  if (!derivedFoundryAccount || derivedFoundryAccount.account !== account) {
+  const password = await resolveFoundryPassword(source)
+  if (
+    !derivedFoundryAccount ||
+    derivedFoundryAccount.account !== account ||
+    derivedFoundryAccount.password !== password
+  ) {
     derivedFoundryAccount = {
       account,
+      password,
       address: getAddress(
         (
-          await checked(
-            run,
-            "cast",
-            ["wallet", "address", "--account", account],
-            { interactive: true }
-          )
+          await checked(run, "cast", [
+            "wallet",
+            "address",
+            "--account",
+            account,
+            "--password",
+            password,
+          ])
         ).stdout.trim()
       ),
     }
@@ -849,6 +890,102 @@ export async function waitForRuntimeCode(
   throw new Error(`${label} deployment has no runtime code${diagnostic}`)
 }
 
+export function evmVerificationFromForgeOutput(output: string): {
+  verificationStatus: "verified" | "pending"
+  verifiedAt?: string
+} {
+  if (
+    /already verified|Pass - Verified|contract successfully verified/i.test(
+      output
+    )
+  ) {
+    return {
+      verificationStatus: "verified",
+      verifiedAt: new Date().toISOString(),
+    }
+  }
+  return { verificationStatus: "pending" }
+}
+
+export function isExplorerVerificationPending(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /Verification is still pending|Pending in queue|already verified|Could not detect deployment|Unable to locate ContractCode/i.test(
+    message
+  )
+}
+
+function needsEvmVerificationRetry(existing: TargetState | undefined) {
+  return (
+    existing?.family === "evm" &&
+    existing.status === "complete" &&
+    Boolean(existing.address) &&
+    existing.verificationStatus !== "verified"
+  )
+}
+
+async function evmConstructorArgs(run: RunCommand, usdc: string) {
+  return (
+    await checked(run, "cast", ["abi-encode", "constructor(address)", usdc])
+  ).stdout.trim()
+}
+
+async function verifyEvmContract(input: {
+  target: EvmTarget
+  rpc: string
+  address: Address
+  source: Record<string, string | undefined>
+  run: RunCommand
+  log: (message: string) => void
+}): Promise<{
+  verificationStatus: "verified" | "pending"
+  verifiedAt?: string
+}> {
+  const constructorArgs = await evmConstructorArgs(input.run, input.target.usdc)
+  try {
+    const result = await checked(
+      input.run,
+      "forge",
+      [
+        "verify-contract",
+        "--root",
+        ".",
+        "--chain",
+        String(input.target.chainId),
+        "--rpc-url",
+        input.rpc,
+        "--verifier",
+        "etherscan",
+        "--etherscan-api-key",
+        required(input.source, "ETHERSCAN_API_KEY"),
+        "--constructor-args",
+        constructorArgs,
+        input.address,
+        "src/SessionSpend7702.sol:SessionSpend7702",
+      ],
+      { cwd: evmRoot }
+    )
+    return evmVerificationFromForgeOutput(`${result.stdout}\n${result.stderr}`)
+  } catch (error) {
+    const output = error instanceof Error ? error.message : String(error)
+    if (/already verified/i.test(output)) {
+      return {
+        verificationStatus: "verified",
+        verifiedAt: new Date().toISOString(),
+      }
+    }
+    if (isExplorerVerificationPending(error)) {
+      input.log(
+        `${input.target.name}: explorer verification still pending; recorded and continuing`
+      )
+      return { verificationStatus: "pending" }
+    }
+    input.log(
+      `${input.target.name}: explorer verification failed; recorded as pending and continuing: ${output}`
+    )
+    return { verificationStatus: "pending" }
+  }
+}
+
 async function deployEvm(
   target: EvmTarget,
   preflight: Awaited<ReturnType<typeof preflightEvm>>,
@@ -879,6 +1016,7 @@ async function deployEvm(
       txHash: existing.txHash as Hex,
     }
   } else {
+    const signer = await foundryAccount(run, options.source)
     const result = await checked(
       run,
       "forge",
@@ -887,8 +1025,9 @@ async function deployEvm(
         account: preflight.account,
         sender: preflight.sender,
         usdc: target.usdc,
+        password: signer.password,
       }),
-      { cwd: evmRoot, interactive: true }
+      { cwd: evmRoot }
     )
     deployed = parseForgeDeployment(result.stdout)
     await onBroadcast({
@@ -911,36 +1050,14 @@ async function deployEvm(
     target.name
   )
   const codeHash = keccak256(code)
-  const constructorArgs = (
-    await checked(run, "cast", [
-      "abi-encode",
-      "constructor(address)",
-      target.usdc,
-    ])
-  ).stdout.trim()
-  await checked(
+  const verification = await verifyEvmContract({
+    target,
+    rpc: preflight.rpc,
+    address: deployed.address,
+    source: options.source,
     run,
-    "forge",
-    [
-      "verify-contract",
-      "--root",
-      ".",
-      "--chain",
-      String(target.chainId),
-      "--rpc-url",
-      preflight.rpc,
-      "--verifier",
-      "etherscan",
-      "--etherscan-api-key",
-      required(options.source, "ETHERSCAN_API_KEY"),
-      "--constructor-args",
-      constructorArgs,
-      "--watch",
-      deployed.address,
-      "src/SessionSpend7702.sol:SessionSpend7702",
-    ],
-    { cwd: evmRoot }
-  )
+    log,
+  })
   return {
     family: "evm",
     name: target.name,
@@ -949,8 +1066,8 @@ async function deployEvm(
     address: deployed.address,
     txHash: deployed.txHash,
     codeHash,
-    verificationStatus: "verified",
-    verifiedAt: new Date().toISOString(),
+    verificationStatus: verification.verificationStatus,
+    verifiedAt: verification.verifiedAt,
   }
 }
 
@@ -1469,62 +1586,127 @@ export async function runDeploy(
     return manifest
   }
 
-  for (const target of targets) {
+  const persistManifest = createAsyncQueue()
+  const remaining = targets.filter((target) => {
     const existing = manifest.targets[target.key]
     const preflight = preflights.get(target.key)!
-    if (
-      existing?.status === "complete" &&
-      !shouldBroadcastUpgrade(options, existing, preflight.artifactHash)
-    ) {
-      continue
-    }
-    manifest.targets[target.key] = {
-      ...existing,
-      family: target.family,
-      name: target.name,
-      status: "running",
-      error: undefined,
-    }
-    await saveManifest(path, manifest)
-    try {
-      const persistBroadcast = async (state: Partial<TargetState>) => {
-        manifest!.targets[target.key] = {
-          ...manifest!.targets[target.key],
-          ...state,
-        }
-        await saveManifest(path, manifest!)
-      }
-      manifest.targets[target.key] =
-        target.family === "evm"
-          ? await deployEvm(
-              target,
-              preflight as Awaited<ReturnType<typeof preflightEvm>>,
-              options,
-              dependencies.run,
-              dependencies.log,
-              persistBroadcast,
-              existing
-            )
-          : await deploySolana(
-              target,
-              preflight as Awaited<ReturnType<typeof preflightSolana>>,
-              options,
-              dependencies.run,
-              dependencies.log,
-              persistBroadcast,
-              existing
-            )
-      await saveManifest(path, manifest)
-    } catch (error) {
-      manifest.targets[target.key] = {
-        ...manifest.targets[target.key],
-        status: "failed",
-        error: safeError(error, options.source),
-      }
-      await saveManifest(path, manifest)
-      throw error
-    }
+    return (
+      existing?.status !== "complete" ||
+      shouldBroadcastUpgrade(options, existing, preflight.artifactHash) ||
+      needsEvmVerificationRetry(existing)
+    )
+  })
+  if (remaining.length > 1) {
+    dependencies.log(
+      `Deploying remaining networks in parallel: ${remaining
+        .map((target) => target.name)
+        .join(", ")}`
+    )
   }
-  await mergeDeployments(deploymentsPath, manifest, targets)
+
+  const results = await Promise.allSettled(
+    targets.map(async (target) => {
+      const existing = manifest.targets[target.key]
+      const preflight = preflights.get(target.key)!
+      if (
+        existing?.status === "complete" &&
+        !shouldBroadcastUpgrade(options, existing, preflight.artifactHash)
+      ) {
+        if (
+          target.family === "evm" &&
+          needsEvmVerificationRetry(existing) &&
+          existing.address
+        ) {
+          const verification = await verifyEvmContract({
+            target,
+            rpc: (preflight as Awaited<ReturnType<typeof preflightEvm>>).rpc,
+            address: getAddress(existing.address),
+            source: options.source,
+            run: dependencies.run,
+            log: dependencies.log,
+          })
+          await persistManifest(async () => {
+            manifest.targets[target.key] = {
+              ...manifest.targets[target.key],
+              ...existing,
+              verificationStatus: verification.verificationStatus,
+              verifiedAt: verification.verifiedAt,
+            }
+            await saveManifest(path, manifest)
+          })
+        }
+        return
+      }
+      await persistManifest(async () => {
+        manifest.targets[target.key] = {
+          ...manifest.targets[target.key],
+          ...existing,
+          family: target.family,
+          name: target.name,
+          status: "running",
+          error: undefined,
+        }
+        await saveManifest(path, manifest)
+      })
+      try {
+        const persistBroadcast = async (state: Partial<TargetState>) => {
+          await persistManifest(async () => {
+            manifest.targets[target.key] = {
+              ...manifest.targets[target.key],
+              ...state,
+            }
+            await saveManifest(path, manifest)
+          })
+        }
+        const next = dependencies.deployTarget
+          ? await dependencies.deployTarget(target, existing)
+          : target.family === "evm"
+            ? await deployEvm(
+                target,
+                preflight as Awaited<ReturnType<typeof preflightEvm>>,
+                options,
+                dependencies.run,
+                dependencies.log,
+                persistBroadcast,
+                existing
+              )
+            : await deploySolana(
+                target,
+                preflight as Awaited<ReturnType<typeof preflightSolana>>,
+                options,
+                dependencies.run,
+                dependencies.log,
+                persistBroadcast,
+                existing
+              )
+        await persistManifest(async () => {
+          manifest.targets[target.key] = next
+          await saveManifest(path, manifest)
+        })
+      } catch (error) {
+        await persistManifest(async () => {
+          manifest.targets[target.key] = {
+            ...manifest.targets[target.key],
+            status: "failed",
+            error: safeError(error, options.source),
+          }
+          await saveManifest(path, manifest)
+        })
+        throw error
+      }
+    })
+  )
+  const failures = results.flatMap((result, index) =>
+    result.status === "rejected"
+      ? [`${targets[index]!.name}: ${safeError(result.reason, options.source)}`]
+      : []
+  )
+  const recordPath = dependencies.deploymentsPath ?? deploymentsPath
+  if (!dependencies.preflight || dependencies.deploymentsPath) {
+    await mergeDeployments(recordPath, manifest, targets)
+  }
+  if (failures.length > 0) {
+    throw new Error(`deployment failed:\n${failures.join("\n")}`)
+  }
   return manifest
 }
