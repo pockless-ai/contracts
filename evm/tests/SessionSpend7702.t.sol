@@ -363,6 +363,7 @@ contract SessionSpend7702Test is Test {
 
         address vault = wallet.strategyVaultOf(STRATEGY_A);
         usdc.mint(vault, 220_000_000);
+        uint256 ownerBefore = usdc.balanceOf(address(wallet));
 
         SessionSpendBase.CreditUsdcReturnIntent memory intent =
             SessionSpendBase.CreditUsdcReturnIntent({
@@ -386,6 +387,40 @@ contract SessionSpend7702Test is Test {
         assertEq(session.deployedUsdc, 100_000_000);
         assertEq(session.capacityUsdc, LIMIT_USDC);
         assertFalse(wallet.pendingSellOf(RELAY_ORDER_B).exists);
+        assertEq(usdc.balanceOf(vault), 0);
+        assertEq(usdc.balanceOf(address(wallet)), ownerBefore + 220_000_000);
+    }
+
+    function testCreditUsdcReturnSendsNetProceedsToOwnerAndFeeToTreasury() public {
+        _seedRemoteInventory(1 ether, 200_000_000);
+        _executeRemoteRelaySell(RELAY_ORDER_B, 0.5 ether);
+
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        usdc.mint(vault, 220_000_000);
+        uint256 ownerBefore = usdc.balanceOf(address(wallet));
+        uint256 feeBefore = usdc.balanceOf(feeRecipient);
+
+        SessionSpendBase.CreditUsdcReturnIntent memory intent =
+            SessionSpendBase.CreditUsdcReturnIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+                deadline: EXPIRES_AT,
+                relayOrderId: RELAY_ORDER_B,
+                fundingChainId: FUNDING_CHAIN_ID,
+                usdcReceived: 220_000_000,
+                destQuantityReleased: 0.5 ether,
+                destCostReleasedUsdc: 100_000_000,
+                platformFeeUsdc: PLATFORM_FEE,
+                feeRecipient: feeRecipient
+            });
+
+        vm.prank(platformRelayer);
+        wallet.creditUsdcReturn(intent, _signCreditUsdcReturn(intent));
+
+        assertEq(usdc.balanceOf(feeRecipient), feeBefore + PLATFORM_FEE);
+        assertEq(usdc.balanceOf(address(wallet)), ownerBefore + 220_000_000 - PLATFORM_FEE);
+        assertEq(usdc.balanceOf(vault), 0);
     }
 
     function testCreditUsdcReturnRequiresPendingSell() public {
@@ -411,6 +446,37 @@ contract SessionSpend7702Test is Test {
         vm.prank(platformRelayer);
         vm.expectRevert(SessionSpendBase.PendingRecordMissing.selector);
         wallet.creditUsdcReturn(intent, _signCreditUsdcReturn(intent));
+    }
+
+    function testCreditUsdcReturnOpensFundingPendingWhenOriginPendingIsOnAnotherChain() public {
+        _seedRemoteInventory(1 ether, 200_000_000);
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        usdc.mint(vault, 220_000_000);
+        uint256 ownerBefore = usdc.balanceOf(address(wallet));
+
+        SessionSpendBase.CreditUsdcReturnIntent memory intent =
+            SessionSpendBase.CreditUsdcReturnIntent({
+                strategyId: STRATEGY_A,
+                sessionKey: sessionKey,
+                nonce: wallet.sessionOf(STRATEGY_A, sessionKey).nonce,
+                deadline: EXPIRES_AT,
+                relayOrderId: RELAY_ORDER_B,
+                fundingChainId: block.chainid,
+                usdcReceived: 220_000_000,
+                destQuantityReleased: 1 ether,
+                destCostReleasedUsdc: 200_000_000,
+                platformFeeUsdc: 0,
+                feeRecipient: address(0)
+            });
+
+        vm.prank(platformRelayer);
+        wallet.creditUsdcReturn(intent, _signCreditUsdcReturn(intent));
+
+        SessionSpendBase.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
+        assertEq(session.deployedUsdc, 0);
+        assertFalse(wallet.pendingSellOf(RELAY_ORDER_B).exists);
+        assertEq(usdc.balanceOf(vault), 0);
+        assertEq(usdc.balanceOf(address(wallet)), ownerBefore + 220_000_000);
     }
 
     function testReleaseRelayDepositReversesDeployedLock() public {

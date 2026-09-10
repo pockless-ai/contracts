@@ -120,7 +120,18 @@ contract SessionSpendRelay is SessionSpendBase {
     ) external onlyPlatformRelayer nonReentrant {
         Layout storage $ = _layout();
         PendingSell storage sell = $.pendingSells[intent.relayOrderId];
-        if (!sell.exists || sell.strategyId != intent.strategyId) revert PendingRecordMissing();
+        // Cross-chain EVM sells write pending on the origin chain. Dest USDC and
+        // deployed USDC live on the funding chain, so credit opens the matching
+        // pending here from the signed intent when this is the funding chain.
+        if (!sell.exists) {
+            if (intent.fundingChainId != block.chainid) revert PendingRecordMissing();
+            sell.strategyId = intent.strategyId;
+            sell.fundingChainId = intent.fundingChainId;
+            sell.quantity = intent.destQuantityReleased;
+            sell.provisionalCostUsdc = intent.destCostReleasedUsdc;
+            sell.exists = true;
+        }
+        if (sell.strategyId != intent.strategyId) revert PendingRecordMissing();
         if (sell.fundingChainId != intent.fundingChainId) revert InvalidIntent();
         if (intent.destQuantityReleased != sell.quantity) revert InvalidIntent();
         if (uint256(intent.destCostReleasedUsdc) != uint256(sell.provisionalCostUsdc)) {

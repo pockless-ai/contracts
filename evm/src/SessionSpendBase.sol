@@ -1028,16 +1028,20 @@ abstract contract SessionSpendBase {
         internal
         returns (int256 realizedPnlUsdc)
     {
+        uint256 netReturn = intent.usdcReceived - intent.platformFeeUsdc;
         if (intent.platformFeeUsdc > 0) {
             _asVault(vault).transferToken(usdcToken, intent.feeRecipient, intent.platformFeeUsdc);
             emit PlatformFeeCharged(
                 intent.strategyId, intent.sessionKey, intent.feeRecipient, intent.platformFeeUsdc
             );
         }
+        if (netReturn > 0) {
+            _asVault(vault).transferToken(usdcToken, address(this), netReturn);
+        }
 
         Session storage session = _layout().sessions[intent.strategyId][intent.sessionKey];
         uint256 costReleased = _normalizeUsdc(uint256(intent.destCostReleasedUsdc));
-        uint256 netUsdc = _normalizeUsdc(intent.usdcReceived - intent.platformFeeUsdc);
+        uint256 netUsdc = _normalizeUsdc(netReturn);
         session.deployedUsdc = uint128(uint256(session.deployedUsdc) - costReleased);
         if (netUsdc >= costReleased) {
             uint256 profit = netUsdc - costReleased;

@@ -426,6 +426,26 @@ export const sessionSpend7702Abi = [
     inputs: [{ name: "strategyId", type: "bytes32" }],
     outputs: [{ name: "", type: "address" }],
   },
+  {
+    type: "function",
+    name: "pendingSellOf",
+    stateMutability: "view",
+    inputs: [{ name: "relayOrderId", type: "bytes32" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "strategyId", type: "bytes32" },
+          { name: "token", type: "address" },
+          { name: "fundingChainId", type: "uint256" },
+          { name: "quantity", type: "uint256" },
+          { name: "provisionalCostUsdc", type: "uint128" },
+          { name: "exists", type: "bool" },
+        ],
+      },
+    ],
+  },
 ] as const
 
 export type SwapBundleIntentV2Message = {
