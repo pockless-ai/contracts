@@ -171,6 +171,8 @@ export function evmDeployArgs(input: {
   sender: string
   usdc: string
   password?: string
+  gasPrice?: bigint
+  priorityGasPrice?: bigint
 }) {
   return [
     "create",
@@ -186,6 +188,12 @@ export function evmDeployArgs(input: {
     input.sender,
     "--broadcast",
     "--json",
+    ...(input.gasPrice !== undefined
+      ? (["--gas-price", input.gasPrice.toString()] as const)
+      : []),
+    ...(input.priorityGasPrice !== undefined
+      ? (["--priority-gas-price", input.priorityGasPrice.toString()] as const)
+      : []),
     "--constructor-args",
     input.usdc,
   ]

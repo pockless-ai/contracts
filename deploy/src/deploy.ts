@@ -608,6 +608,42 @@ function artifactBytecode(raw: unknown) {
   return artifact
 }
 
+type FeeClient = {
+  estimateGas: (parameters: {
+    account: Address
+    data: Hex
+  }) => Promise<bigint>
+  estimateFeesPerGas: () => Promise<{
+    maxFeePerGas?: bigint
+    maxPriorityFeePerGas?: bigint
+  }>
+  getGasPrice: () => Promise<bigint>
+}
+
+export async function evmBroadcastFees(
+  client: FeeClient,
+  sender: Address,
+  data: Hex
+) {
+  const gas = await client.estimateGas({ account: sender, data })
+  let maxFeePerGas: bigint
+  let maxPriorityFeePerGas: bigint | undefined
+  try {
+    const fees = await client.estimateFeesPerGas()
+    if (!fees.maxFeePerGas) throw new Error("missing max fee per gas")
+    maxFeePerGas = fees.maxFeePerGas
+    maxPriorityFeePerGas = fees.maxPriorityFeePerGas
+  } catch {
+    maxFeePerGas = await client.getGasPrice()
+  }
+  return {
+    gas,
+    maxFeePerGas,
+    maxPriorityFeePerGas,
+    estimated: gas * maxFeePerGas,
+  }
+}
+
 function shouldBroadcastUpgrade(
   options: DeployOptions,
   existing: TargetState | undefined,
@@ -679,9 +715,8 @@ async function preflightEvm(
     !existing.txHash ||
     shouldBroadcastUpgrade(options, existing, artifactHash)
   ) {
-    const gas = await client.estimateGas({ account: sender, data })
-    const gasPrice = await client.getGasPrice()
-    const estimated = gas * gasPrice
+    const fees = await evmBroadcastFees(client, sender, data)
+    const estimated = fees.estimated
     const requiredBalance =
       (estimated * BigInt(100 + options.safetyBufferPercent)) / 100n
     const balance = await client.getBalance({ address: sender })
@@ -1017,6 +1052,29 @@ async function deployEvm(
     }
   } else {
     const signer = await foundryAccount(run, options.source)
+    const artifactPath = join(
+      evmRoot,
+      "out/SessionSpend7702.sol/SessionSpend7702.json"
+    )
+    const artifact = artifactBytecode(
+      JSON.parse(await readFile(artifactPath, "utf8"))
+    )
+    const data = encodeDeployData({
+      abi,
+      bytecode: artifact.bytecode!.object!,
+      args: [target.usdc],
+    })
+    const client = createPublicClient({ transport: http(preflight.rpc) })
+    const fees = await evmBroadcastFees(client, preflight.sender, data)
+    const balance = await client.getBalance({ address: preflight.sender })
+    if (balance < fees.estimated) {
+      throw new Error(
+        `${target.name} deployer is underfunded by ${formatUnits(
+          fees.estimated - balance,
+          18
+        )} ${nativeAsset(target)} (RPC reserves gas × maxFeePerGas)`
+      )
+    }
     const result = await checked(
       run,
       "forge",
@@ -1026,6 +1084,8 @@ async function deployEvm(
         sender: preflight.sender,
         usdc: target.usdc,
         password: signer.password,
+        gasPrice: fees.maxFeePerGas,
+        priorityGasPrice: fees.maxPriorityFeePerGas,
       }),
       { cwd: evmRoot }
     )

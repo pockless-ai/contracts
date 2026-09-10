@@ -12,6 +12,7 @@ import {
 import { loadDeployEnv, resolveSolanaKeypairs } from "../src/env"
 import { loadTargets } from "../src/config"
 import {
+  evmBroadcastFees,
   evmVerificationFromForgeOutput,
   isExplorerVerificationPending,
   runDeploy,
@@ -244,6 +245,19 @@ test("command construction never uses raw keys and redacts signer paths", () => 
   assert.equal(
     redactArgs(evmWithPassword)[evmWithPassword.indexOf("--password") + 1],
     "<redacted>"
+  )
+  const evmWithFees = evmDeployArgs({
+    rpc: "https://example.test",
+    account: "release",
+    sender: testUsdc,
+    usdc: testUsdc,
+    gasPrice: 30n,
+    priorityGasPrice: 2n,
+  })
+  assert.equal(evmWithFees[evmWithFees.indexOf("--gas-price") + 1], "30")
+  assert.equal(
+    evmWithFees[evmWithFees.indexOf("--priority-gas-price") + 1],
+    "2"
   )
   const solana = solanaDeployArgs({
     artifact: "program.so",
@@ -717,6 +731,23 @@ test("remaining targets deploy in parallel and keep going after one failure", as
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test("evm funding reserves gas times maxFeePerGas, not the spot gas price", async () => {
+  const fees = await evmBroadcastFees(
+    {
+      estimateGas: async () => 100n,
+      estimateFeesPerGas: async () => ({
+        maxFeePerGas: 50n,
+        maxPriorityFeePerGas: 2n,
+      }),
+      getGasPrice: async () => 20n,
+    },
+    testUsdc,
+    "0x"
+  )
+  assert.equal(fees.estimated, 5000n)
+  assert.equal(fees.maxFeePerGas, 50n)
 })
 
 test("explorer verification queue timeouts are pending, not failed deploys", () => {
