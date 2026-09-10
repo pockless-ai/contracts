@@ -15,6 +15,7 @@ import {
   evmBroadcastFees,
   evmVerificationFromForgeOutput,
   isExplorerVerificationPending,
+  parseVerifyGuid,
   runDeploy,
   waitForRuntimeCode,
 } from "../src/deploy"
@@ -774,5 +775,11 @@ test("explorer verification queue timeouts are pending, not failed deploys", () 
   assert.equal(
     isExplorerVerificationPending(new Error("Compiler version mismatch")),
     false
+  )
+  assert.equal(
+    parseVerifyGuid(
+      "Submitted contract for verification:\n\tGUID: `b7u3d12a99yrv6dj8i9yec8ites25srjugfvakjhawgkndlejc`"
+    ),
+    "b7u3d12a99yrv6dj8i9yec8ites25srjugfvakjhawgkndlejc"
   )
 })

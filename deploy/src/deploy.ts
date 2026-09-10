@@ -942,6 +942,10 @@ export function evmVerificationFromForgeOutput(output: string): {
   return { verificationStatus: "pending" }
 }
 
+export function parseVerifyGuid(output: string) {
+  return output.match(/GUID:\s*`?([a-z0-9]+)`?/i)?.[1]
+}
+
 export function isExplorerVerificationPending(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
   return /Verification is still pending|Pending in queue|already verified|Could not detect deployment|Unable to locate ContractCode/i.test(
@@ -964,6 +968,17 @@ async function evmConstructorArgs(run: RunCommand, usdc: string) {
   ).stdout.trim()
 }
 
+function verifiedResult() {
+  return {
+    verificationStatus: "verified" as const,
+    verifiedAt: new Date().toISOString(),
+  }
+}
+
+function verificationOutput(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
 async function verifyEvmContract(input: {
   target: EvmTarget
   rpc: string
@@ -975,49 +990,83 @@ async function verifyEvmContract(input: {
   verificationStatus: "verified" | "pending"
   verifiedAt?: string
 }> {
+  const apiKey = required(input.source, "ETHERSCAN_API_KEY")
   const constructorArgs = await evmConstructorArgs(input.run, input.target.usdc)
-  try {
-    const result = await checked(
-      input.run,
-      "forge",
-      [
-        "verify-contract",
-        "--root",
-        ".",
-        "--chain",
-        String(input.target.chainId),
-        "--rpc-url",
-        input.rpc,
-        "--verifier",
-        "etherscan",
-        "--etherscan-api-key",
-        required(input.source, "ETHERSCAN_API_KEY"),
-        "--constructor-args",
-        constructorArgs,
-        input.address,
-        "src/SessionSpend7702.sol:SessionSpend7702",
-      ],
-      { cwd: evmRoot }
-    )
-    return evmVerificationFromForgeOutput(`${result.stdout}\n${result.stderr}`)
-  } catch (error) {
-    const output = error instanceof Error ? error.message : String(error)
-    if (/already verified/i.test(output)) {
-      return {
-        verificationStatus: "verified",
-        verifiedAt: new Date().toISOString(),
+  const submitArgs = [
+    "verify-contract",
+    "--root",
+    ".",
+    "--chain",
+    String(input.target.chainId),
+    "--rpc-url",
+    input.rpc,
+    "--verifier",
+    "etherscan",
+    "--etherscan-api-key",
+    apiKey,
+    "--constructor-args",
+    constructorArgs,
+    input.address,
+    "src/SessionSpend7702.sol:SessionSpend7702",
+  ]
+  const timeoutMs =
+    positiveInteger(input.source, "EVM_VERIFY_TIMEOUT_SECONDS", 300) * 1000
+  const pollMs =
+    positiveInteger(input.source, "EVM_VERIFY_POLL_SECONDS", 15) * 1000
+  const deadline = Date.now() + timeoutMs
+  let guid: string | undefined
+  let attempt = 0
+
+  while (true) {
+    attempt += 1
+    try {
+      const result = guid
+        ? await checked(
+            input.run,
+            "forge",
+            [
+              "verify-check",
+              "--chain",
+              String(input.target.chainId),
+              "--verifier",
+              "etherscan",
+              "--etherscan-api-key",
+              apiKey,
+              guid,
+            ],
+            { cwd: evmRoot }
+          )
+        : await checked(input.run, "forge", submitArgs, { cwd: evmRoot })
+      const output = `${result.stdout}\n${result.stderr}`
+      if (evmVerificationFromForgeOutput(output).verificationStatus === "verified") {
+        return verifiedResult()
+      }
+      guid = parseVerifyGuid(output) ?? guid
+    } catch (error) {
+      const output = verificationOutput(error)
+      if (/already verified|Pass - Verified/i.test(output)) {
+        return verifiedResult()
+      }
+      guid = parseVerifyGuid(output) ?? guid
+      if (!guid && !isExplorerVerificationPending(error)) {
+        input.log(
+          `${input.target.name}: explorer verification failed; recorded as pending and continuing: ${output}`
+        )
+        return { verificationStatus: "pending" }
       }
     }
-    if (isExplorerVerificationPending(error)) {
+    if (Date.now() >= deadline) {
       input.log(
-        `${input.target.name}: explorer verification still pending; recorded and continuing`
+        `${input.target.name}: explorer verification still pending after ${timeoutMs / 1000}s; recorded and continuing`
       )
       return { verificationStatus: "pending" }
     }
     input.log(
-      `${input.target.name}: explorer verification failed; recorded as pending and continuing: ${output}`
+      `${input.target.name}: explorer verification pending${
+        guid ? ` (${guid})` : ""
+      } (attempt ${attempt}); retrying in ${pollMs / 1000}s`
     )
-    return { verificationStatus: "pending" }
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
   }
 }
 
@@ -1612,7 +1661,9 @@ export async function runDeploy(
         dependencies.log(
           shouldBroadcastUpgrade(options, existing, preflight.artifactHash)
             ? `${target.name}: completed deployment validated; upgrade required`
-            : `${target.name}: completed deployment validated; skipping`
+            : needsEvmVerificationRetry(existing)
+              ? `${target.name}: completed deployment validated; retrying explorer verification`
+              : `${target.name}: completed deployment validated; skipping`
         )
       }
     } catch (error) {
@@ -1656,9 +1707,27 @@ export async function runDeploy(
       needsEvmVerificationRetry(existing)
     )
   })
-  if (remaining.length > 1) {
+  const broadcasting = remaining.filter((target) => {
+    const existing = manifest.targets[target.key]
+    const preflight = preflights.get(target.key)!
+    return (
+      existing?.status !== "complete" ||
+      shouldBroadcastUpgrade(options, existing, preflight.artifactHash)
+    )
+  })
+  const verifying = remaining.filter(
+    (target) => !broadcasting.some((item) => item.key === target.key)
+  )
+  if (broadcasting.length > 1) {
     dependencies.log(
-      `Deploying remaining networks in parallel: ${remaining
+      `Deploying remaining networks in parallel: ${broadcasting
+        .map((target) => target.name)
+        .join(", ")}`
+    )
+  }
+  if (verifying.length > 0) {
+    dependencies.log(
+      `Retrying explorer verification: ${verifying
         .map((target) => target.name)
         .join(", ")}`
     )
