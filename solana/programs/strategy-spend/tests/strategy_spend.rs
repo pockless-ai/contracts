@@ -872,7 +872,10 @@ impl TestHarness {
                 AccountMeta::new_readonly(self.session.pubkey(), true),
                 AccountMeta::new(self.relayer.pubkey(), true),
                 AccountMeta::new_readonly(self.owner.pubkey(), false),
-                AccountMeta::new_readonly(wallet_pda(&self.program_id, &self.owner.pubkey()), false),
+                AccountMeta::new_readonly(
+                    wallet_pda(&self.program_id, &self.owner.pubkey()),
+                    false,
+                ),
                 AccountMeta::new(strategy, false),
                 AccountMeta::new(vault_authority, false),
                 AccountMeta::new(wsol_vault, false),
@@ -1566,7 +1569,11 @@ async fn credit_relay_wraps_native_sol_into_wsol_surplus() {
         &mut banks_client,
         &payer,
         &[&payer],
-        system_instruction::transfer(&payer.pubkey(), &vault_authority, credit_quantity + leftover),
+        system_instruction::transfer(
+            &payer.pubkey(),
+            &vault_authority,
+            credit_quantity + leftover,
+        ),
     )
     .await
     .unwrap();
