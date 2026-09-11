@@ -389,6 +389,8 @@ export function encodeExecuteRemoteRelaySell(input: {
   minReturnUsdc: bigint
   nonce: bigint
   deadline: bigint
+  /** Jupiter route data prefixed with its trailing account count. */
+  swapIxData: Buffer
   relayIxData: Buffer
 }) {
   const header = Buffer.alloc(1 + 32 + 8 + 8 + 8 + 8 + 8)
@@ -399,7 +401,10 @@ export function encodeExecuteRemoteRelaySell(input: {
   header.writeBigUInt64LE(input.minReturnUsdc, 49)
   header.writeBigUInt64LE(input.nonce, 57)
   header.writeBigInt64LE(input.deadline, 65)
-  return appendVecU8(header, input.relayIxData)
+  return appendVecU8(
+    appendVecU8(header, input.swapIxData),
+    input.relayIxData
+  )
 }
 
 export function encodeExecuteRelayGasTopUp(input: {
@@ -438,6 +443,8 @@ export function encodeReleaseRelayGasTopUp(input: {
 export function encodeCreditUsdcReturn(input: {
   relayOrderId: Uint8Array
   fundingChainId: bigint
+  /** Chain the sell executed on; a remote origin has no local pending record. */
+  originChainId: bigint
   grossReturnUsdc: bigint
   quantityReleased: bigint
   costReleasedUsdc: bigint
@@ -445,16 +452,17 @@ export function encodeCreditUsdcReturn(input: {
   nonce: bigint
   deadline: bigint
 }) {
-  const data = Buffer.alloc(1 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 8)
+  const data = Buffer.alloc(1 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8)
   data[0] = VARIANT.CreditUsdcReturn
   data.set(Buffer.from(input.relayOrderId), 1)
   data.writeBigUInt64LE(input.fundingChainId, 33)
-  data.writeBigUInt64LE(input.grossReturnUsdc, 41)
-  data.writeBigUInt64LE(input.quantityReleased, 49)
-  data.writeBigUInt64LE(input.costReleasedUsdc, 57)
-  data.writeBigUInt64LE(input.platformFeeUsdc, 65)
-  data.writeBigUInt64LE(input.nonce, 73)
-  data.writeBigInt64LE(input.deadline, 81)
+  data.writeBigUInt64LE(input.originChainId, 41)
+  data.writeBigUInt64LE(input.grossReturnUsdc, 49)
+  data.writeBigUInt64LE(input.quantityReleased, 57)
+  data.writeBigUInt64LE(input.costReleasedUsdc, 65)
+  data.writeBigUInt64LE(input.platformFeeUsdc, 73)
+  data.writeBigUInt64LE(input.nonce, 81)
+  data.writeBigInt64LE(input.deadline, 89)
   return data
 }
 

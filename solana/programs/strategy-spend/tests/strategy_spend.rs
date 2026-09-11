@@ -23,13 +23,16 @@ use spl_token::{
 use strategy_spend::instruction::{GasMode, StrategySpendInstruction};
 use strategy_spend::state::{
     RemoteMintAggregate, RemoteStrategyAsset, StrategyAccount, StrategyAsset, WalletConfig,
-    ASSET_SEED, AUTHORITY_SEED, RELAY_ACTION_CREDIT_ASSET, RELAY_RECEIPT_SEED,
-    REMOTE_AGGREGATE_SEED, REMOTE_ASSET_SEED, STRATEGY_SEED, VAULT_SEED, WALLET_SEED,
+    ASSET_SEED, AUTHORITY_SEED, RELAY_ACTION_CREDIT_ASSET, RELAY_ACTION_DEPOSIT,
+    RELAY_ACTION_REMOTE_SELL, RELAY_ACTION_USDC_RETURN, RELAY_PENDING_DEPOSIT_SEED,
+    RELAY_PENDING_SELL_SEED, RELAY_RECEIPT_SEED, REMOTE_AGGREGATE_SEED, REMOTE_ASSET_SEED,
+    SOLANA_RELAY_CHAIN_ID, STRATEGY_SEED, VAULT_SEED, WALLET_SEED,
 };
 
 const LIMIT_USDC: u64 = 1_000_000_000;
 const EXPIRES_AT: i64 = 4_102_444_800;
 const GAS_FUNDER_SEED: &[u8] = b"gas-funder";
+const FORWARDER_SEED: &[u8] = b"forwarder";
 
 fn strategy_id(seed: &str) -> [u8; 32] {
     solana_sdk::hash::hash(seed.as_bytes()).to_bytes()
@@ -183,23 +186,47 @@ fn mock_token_swap(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
     let input_amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
     let output_amount = u64::from_le_bytes(data[8..16].try_into().unwrap());
 
-    invoke(
-        &token_instruction::burn_checked(
-            token_program.key,
-            source.key,
-            input_mint.key,
-            authority.key,
-            &[],
-            input_amount,
-            6,
-        )?,
-        &[
-            source.clone(),
-            input_mint.clone(),
-            authority.clone(),
-            token_program.clone(),
-        ],
-    )?;
+    if input_mint.key == &spl_token::native_mint::id() {
+        // Wrapped SOL cannot be burned, so the sold side moves to a sink.
+        let input_sink = next_account_info(accounts)?;
+        invoke(
+            &token_instruction::transfer_checked(
+                token_program.key,
+                source.key,
+                input_mint.key,
+                input_sink.key,
+                authority.key,
+                &[],
+                input_amount,
+                9,
+            )?,
+            &[
+                source.clone(),
+                input_mint.clone(),
+                input_sink.clone(),
+                authority.clone(),
+                token_program.clone(),
+            ],
+        )?;
+    } else {
+        invoke(
+            &token_instruction::burn_checked(
+                token_program.key,
+                source.key,
+                input_mint.key,
+                authority.key,
+                &[],
+                input_amount,
+                6,
+            )?,
+            &[
+                source.clone(),
+                input_mint.clone(),
+                authority.clone(),
+                token_program.clone(),
+            ],
+        )?;
+    }
     if output_mint.key == &spl_token::native_mint::id() {
         let gas_funder = next_account_info(accounts)?;
         let system_program_account = next_account_info(accounts)?;
@@ -238,9 +265,90 @@ fn mock_token_swap(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
     }
 }
 
+/// Stands in for Relay's `relay_forwarder`: `forward_token` takes no amount and
+/// sweeps whatever the origin swap left in the forwarder's token account.
+fn mock_forwarder(program_id: &Pubkey, accounts: &[AccountInfo], _data: &[u8]) -> ProgramResult {
+    let accounts = &mut accounts.iter();
+    let sender = next_account_info(accounts)?;
+    let forwarder = next_account_info(accounts)?;
+    let forwarder_token_account = next_account_info(accounts)?;
+    let relay_vault_token_account = next_account_info(accounts)?;
+    let mint = next_account_info(accounts)?;
+    let token_program = next_account_info(accounts)?;
+    if !sender.is_signer {
+        return Err(solana_program::program_error::ProgramError::MissingRequiredSignature);
+    }
+    let amount = TokenAccount::unpack(&forwarder_token_account.data.borrow())?.amount;
+    let (_, bump) = Pubkey::find_program_address(&[FORWARDER_SEED], program_id);
+    invoke_signed(
+        &token_instruction::transfer_checked(
+            token_program.key,
+            forwarder_token_account.key,
+            mint.key,
+            relay_vault_token_account.key,
+            forwarder.key,
+            &[],
+            amount,
+            6,
+        )?,
+        &[
+            forwarder_token_account.clone(),
+            mint.clone(),
+            relay_vault_token_account.clone(),
+            forwarder.clone(),
+            token_program.clone(),
+        ],
+        &[&[FORWARDER_SEED, &[bump]]],
+    )
+}
+
+/// Mirrors `relay_depository::deposit_token`: the sender signs, and the vault
+/// USDC it owns is pulled into the relay vault. The sender's signature reaches
+/// the token transfer through CPI privilege inheritance, which is the whole
+/// reason a keyless vault can deposit at all.
+fn mock_relay_depository(
+    _program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    let accounts = &mut accounts.iter();
+    let _depository = next_account_info(accounts)?;
+    let sender = next_account_info(accounts)?;
+    let _depositor = next_account_info(accounts)?;
+    let _relay_vault = next_account_info(accounts)?;
+    let mint = next_account_info(accounts)?;
+    let sender_token_account = next_account_info(accounts)?;
+    let vault_token_account = next_account_info(accounts)?;
+    let token_program = next_account_info(accounts)?;
+    if !sender.is_signer {
+        return Err(solana_program::program_error::ProgramError::MissingRequiredSignature);
+    }
+    let amount = u64::from_le_bytes(data[8..16].try_into().unwrap());
+    invoke(
+        &token_instruction::transfer_checked(
+            token_program.key,
+            sender_token_account.key,
+            mint.key,
+            vault_token_account.key,
+            sender.key,
+            &[],
+            amount,
+            6,
+        )?,
+        &[
+            sender_token_account.clone(),
+            mint.clone(),
+            vault_token_account.clone(),
+            sender.clone(),
+            token_program.clone(),
+        ],
+    )
+}
+
 struct TestHarness {
     program_id: Pubkey,
     jupiter_program: Pubkey,
+    relay_depository: Pubkey,
     owner: Keypair,
     session: Keypair,
     relayer: Keypair,
@@ -249,6 +357,7 @@ struct TestHarness {
     token_mint: Pubkey,
     gas_funder: Pubkey,
     native_output_wsol: Pubkey,
+    forwarder: Pubkey,
     strategy_id: [u8; 32],
 }
 
@@ -266,6 +375,7 @@ impl TestHarness {
     ) -> (Self, solana_program_test::BanksClient, Keypair) {
         let program_id = Pubkey::new_unique();
         let jupiter_program = Pubkey::new_unique();
+        let relay_depository = Pubkey::new_unique();
         let owner = Keypair::new();
         let session = Keypair::new();
         let relayer = Keypair::new();
@@ -286,6 +396,16 @@ impl TestHarness {
             processor!(strategy_spend::process_instruction),
         );
         program_test.add_program("mock_jupiter", jupiter_program, processor!(mock_jupiter));
+        program_test.add_program(
+            "mock_relay_depository",
+            relay_depository,
+            processor!(mock_relay_depository),
+        );
+        program_test.add_program(
+            "mock_forwarder",
+            strategy_spend::processor::RELAY_FORWARDER_PROGRAM_ID,
+            processor!(mock_forwarder),
+        );
         program_test.add_program(
             "spl_token",
             spl_token::id(),
@@ -320,6 +440,27 @@ impl TestHarness {
             native_output_wsol,
             native_token_account(vault_authority, 2_000_000_000),
         );
+        let forwarder = Pubkey::find_program_address(
+            &[FORWARDER_SEED],
+            &strategy_spend::processor::RELAY_FORWARDER_PROGRAM_ID,
+        )
+        .0;
+        program_test.add_account(
+            get_associated_token_address(&forwarder, &usdc_mint),
+            token_account(usdc_mint, forwarder, 0, None),
+        );
+        program_test.add_account(
+            get_associated_token_address(
+                &strategy_spend::processor::RELAY_FORWARDER_PROGRAM_ID,
+                &usdc_mint,
+            ),
+            token_account(
+                usdc_mint,
+                strategy_spend::processor::RELAY_FORWARDER_PROGRAM_ID,
+                0,
+                None,
+            ),
+        );
         program_test.add_account(
             get_associated_token_address(&owner.pubkey(), &usdc_mint),
             token_account(
@@ -336,6 +477,12 @@ impl TestHarness {
         program_test.add_account(
             get_associated_token_address(&vault_authority, &usdc_mint),
             token_account(usdc_mint, vault_authority, 0, None),
+        );
+        let relay_depository_vault =
+            Pubkey::find_program_address(&[VAULT_SEED], &relay_depository).0;
+        program_test.add_account(
+            get_associated_token_address(&relay_depository_vault, &usdc_mint),
+            token_account(usdc_mint, relay_depository_vault, 0, None),
         );
         program_test.add_account(
             get_associated_token_address(&owner.pubkey(), &token_mint),
@@ -390,6 +537,7 @@ impl TestHarness {
         let harness = Self {
             program_id,
             jupiter_program,
+            relay_depository,
             owner,
             session,
             relayer,
@@ -398,6 +546,7 @@ impl TestHarness {
             token_mint,
             gas_funder,
             native_output_wsol,
+            forwarder,
             strategy_id,
         };
         (harness, banks_client, payer)
@@ -411,7 +560,7 @@ impl TestHarness {
                 AccountMeta::new(wallet_pda(&self.program_id, &self.owner.pubkey()), false),
                 AccountMeta::new_readonly(self.usdc_mint, false),
                 AccountMeta::new_readonly(self.jupiter_program, false),
-                AccountMeta::new_readonly(Pubkey::new_unique(), false),
+                AccountMeta::new_readonly(self.relay_depository, false),
                 AccountMeta::new_readonly(self.relayer.pubkey(), false),
                 AccountMeta::new_readonly(system_program::id(), false),
             ],
@@ -694,6 +843,91 @@ impl TestHarness {
         )
     }
 
+    /// A native-SOL buy that pays gas from existing credit. Structurally this
+    /// is the plain token path with a WSOL output, so the program never takes
+    /// the `native_output` branch.
+    fn execute_wsol_credit_only_ix(&self) -> Instruction {
+        let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
+        let vault_authority =
+            Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &self.program_id).0;
+        let program_authority = Pubkey::find_program_address(
+            &[AUTHORITY_SEED, self.owner.pubkey().as_ref()],
+            &self.program_id,
+        )
+        .0;
+        let strategy_usdc = get_associated_token_address(&vault_authority, &self.usdc_mint);
+        let strategy_wsol =
+            get_associated_token_address(&vault_authority, &spl_token::native_mint::id());
+        let asset = Pubkey::find_program_address(
+            &[
+                ASSET_SEED,
+                strategy.as_ref(),
+                spl_token::native_mint::id().as_ref(),
+            ],
+            &self.program_id,
+        )
+        .0;
+        let mut jupiter_data = 200_000_000u64.to_le_bytes().to_vec();
+        jupiter_data.extend_from_slice(&100_000_000u64.to_le_bytes());
+        Instruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta::new_readonly(self.session.pubkey(), true),
+                AccountMeta::new(self.relayer.pubkey(), true),
+                AccountMeta::new_readonly(self.owner.pubkey(), false),
+                AccountMeta::new_readonly(
+                    wallet_pda(&self.program_id, &self.owner.pubkey()),
+                    false,
+                ),
+                AccountMeta::new(strategy, false),
+                AccountMeta::new_readonly(vault_authority, false),
+                AccountMeta::new(
+                    get_associated_token_address(&self.owner.pubkey(), &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new(
+                    get_associated_token_address(&self.treasury.pubkey(), &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new(strategy_usdc, false),
+                AccountMeta::new(strategy_wsol, false),
+                AccountMeta::new(asset, false),
+                AccountMeta::new_readonly(spl_token::native_mint::id(), false),
+                AccountMeta::new_readonly(self.usdc_mint, false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_associated_token_account::id(), false),
+                AccountMeta::new_readonly(system_program::id(), false),
+                AccountMeta::new_readonly(program_authority, false),
+                AccountMeta::new_readonly(self.jupiter_program, false),
+                // Gas slot is unused when the credit already exists.
+                AccountMeta::new(self.relayer.pubkey(), false),
+                AccountMeta::new_readonly(vault_authority, false),
+                AccountMeta::new(strategy_usdc, false),
+                AccountMeta::new(strategy_wsol, false),
+                AccountMeta::new(self.usdc_mint, false),
+                AccountMeta::new(spl_token::native_mint::id(), false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new(self.gas_funder, false),
+                AccountMeta::new_readonly(system_program::id(), false),
+            ],
+            data: StrategySpendInstruction::ExecuteSwapWithFees {
+                is_buy: true,
+                usdc_amount: 200_000_000,
+                token_amount: 90_000_000,
+                platform_fee_usdc: 0,
+                gas_mode: GasMode::CreditOnly,
+                gas_top_up_usdc: 0,
+                native_amount: 0,
+                treasury: self.treasury.pubkey(),
+                gas_recipient: self.relayer.pubkey(),
+                jupiter_data,
+                gas_jupiter_data: vec![],
+            }
+            .try_to_vec()
+            .unwrap(),
+        }
+    }
+
     fn execute_native_output_ix(
         &self,
         gas_recipient: Pubkey,
@@ -895,6 +1129,308 @@ impl TestHarness {
                 max_credit_qty: credit_quantity,
                 nonce: 0,
                 deadline: EXPIRES_AT,
+            }
+            .try_to_vec()
+            .unwrap(),
+        }
+    }
+
+    fn relay_deposit_ix(
+        &self,
+        relay_order_id: [u8; 32],
+        funding_chain_id: u64,
+        amount: u64,
+        platform_fee_usdc: u64,
+        nonce: u64,
+    ) -> Instruction {
+        let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
+        let vault_authority =
+            Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &self.program_id).0;
+        let program_authority = Pubkey::find_program_address(
+            &[AUTHORITY_SEED, self.owner.pubkey().as_ref()],
+            &self.program_id,
+        )
+        .0;
+        let relay_receipt = Pubkey::find_program_address(
+            &[
+                RELAY_RECEIPT_SEED,
+                strategy.as_ref(),
+                relay_order_id.as_ref(),
+                &[RELAY_ACTION_DEPOSIT],
+            ],
+            &self.program_id,
+        )
+        .0;
+        let relay_pending_deposit = Pubkey::find_program_address(
+            &[
+                RELAY_PENDING_DEPOSIT_SEED,
+                strategy.as_ref(),
+                relay_order_id.as_ref(),
+            ],
+            &self.program_id,
+        )
+        .0;
+        let strategy_usdc = get_associated_token_address(&vault_authority, &self.usdc_mint);
+        let relay_depository_vault =
+            Pubkey::find_program_address(&[VAULT_SEED], &self.relay_depository).0;
+        let deposit_amount = amount - platform_fee_usdc;
+        let mut relay_ix_data = vec![0u8; 8];
+        relay_ix_data.extend_from_slice(&deposit_amount.to_le_bytes());
+        relay_ix_data.extend_from_slice(relay_order_id.as_ref());
+
+        Instruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta::new_readonly(self.session.pubkey(), true),
+                AccountMeta::new(self.relayer.pubkey(), true),
+                AccountMeta::new_readonly(self.owner.pubkey(), false),
+                AccountMeta::new_readonly(
+                    wallet_pda(&self.program_id, &self.owner.pubkey()),
+                    false,
+                ),
+                AccountMeta::new(strategy, false),
+                AccountMeta::new(vault_authority, false),
+                AccountMeta::new(
+                    get_associated_token_address(&self.owner.pubkey(), &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new(strategy_usdc, false),
+                AccountMeta::new_readonly(program_authority, false),
+                AccountMeta::new(relay_receipt, false),
+                AccountMeta::new(relay_pending_deposit, false),
+                AccountMeta::new(
+                    get_associated_token_address(&self.treasury.pubkey(), &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_associated_token_account::id(), false),
+                AccountMeta::new_readonly(system_program::id(), false),
+                AccountMeta::new_readonly(self.relay_depository, false),
+                AccountMeta::new_readonly(self.usdc_mint, false),
+                // deposit_token leg, with the vault swapped into both funding
+                // slots Relay quoted for the owner.
+                AccountMeta::new_readonly(
+                    Pubkey::find_program_address(&[b"state"], &self.relay_depository).0,
+                    false,
+                ),
+                AccountMeta::new(vault_authority, false),
+                AccountMeta::new_readonly(self.owner.pubkey(), false),
+                AccountMeta::new_readonly(relay_depository_vault, false),
+                AccountMeta::new_readonly(self.usdc_mint, false),
+                AccountMeta::new(strategy_usdc, false),
+                AccountMeta::new(
+                    get_associated_token_address(&relay_depository_vault, &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_associated_token_account::id(), false),
+                AccountMeta::new_readonly(system_program::id(), false),
+            ],
+            data: StrategySpendInstruction::ExecuteRelayDeposit {
+                relay_order_id,
+                funding_chain_id,
+                amount,
+                min_dest_amount: deposit_amount,
+                locked_cost_usdc: amount - platform_fee_usdc,
+                platform_fee_usdc,
+                nonce,
+                deadline: EXPIRES_AT,
+                relay_ix_data,
+            }
+            .try_to_vec()
+            .unwrap(),
+        }
+    }
+
+    fn credit_usdc_return_ix(
+        &self,
+        relay_order_id: [u8; 32],
+        origin_chain_id: u64,
+        gross_return_usdc: u64,
+        cost_released_usdc: u64,
+        platform_fee_usdc: u64,
+        nonce: u64,
+    ) -> Instruction {
+        let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
+        let vault_authority =
+            Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &self.program_id).0;
+        let relay_receipt = Pubkey::find_program_address(
+            &[
+                RELAY_RECEIPT_SEED,
+                strategy.as_ref(),
+                relay_order_id.as_ref(),
+                &[RELAY_ACTION_USDC_RETURN],
+            ],
+            &self.program_id,
+        )
+        .0;
+        let relay_pending_sell = Pubkey::find_program_address(
+            &[
+                RELAY_PENDING_SELL_SEED,
+                strategy.as_ref(),
+                relay_order_id.as_ref(),
+            ],
+            &self.program_id,
+        )
+        .0;
+
+        Instruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta::new_readonly(self.session.pubkey(), true),
+                AccountMeta::new(self.relayer.pubkey(), true),
+                AccountMeta::new_readonly(self.owner.pubkey(), false),
+                AccountMeta::new_readonly(
+                    wallet_pda(&self.program_id, &self.owner.pubkey()),
+                    false,
+                ),
+                AccountMeta::new(strategy, false),
+                AccountMeta::new_readonly(vault_authority, false),
+                AccountMeta::new(
+                    get_associated_token_address(&self.owner.pubkey(), &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new(
+                    get_associated_token_address(&vault_authority, &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new(
+                    get_associated_token_address(&self.treasury.pubkey(), &self.usdc_mint),
+                    false,
+                ),
+                AccountMeta::new(relay_receipt, false),
+                AccountMeta::new(relay_pending_sell, false),
+                AccountMeta::new_readonly(self.usdc_mint, false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(system_program::id(), false),
+            ],
+            data: StrategySpendInstruction::CreditUsdcReturn {
+                relay_order_id,
+                funding_chain_id: SOLANA_RELAY_CHAIN_ID,
+                origin_chain_id,
+                gross_return_usdc,
+                quantity_released: 1_000_000,
+                cost_released_usdc,
+                platform_fee_usdc,
+                nonce,
+                deadline: EXPIRES_AT,
+            }
+            .try_to_vec()
+            .unwrap(),
+        }
+    }
+
+    fn remote_relay_sell_ix(
+        &self,
+        relay_order_id: [u8; 32],
+        funding_chain_id: u64,
+        sell_quantity: u64,
+        return_usdc: u64,
+        nonce: u64,
+    ) -> Instruction {
+        let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
+        let vault_authority =
+            Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &self.program_id).0;
+        let wsol_vault =
+            get_associated_token_address(&vault_authority, &spl_token::native_mint::id());
+        let remote_asset = Pubkey::find_program_address(
+            &[
+                REMOTE_ASSET_SEED,
+                strategy.as_ref(),
+                spl_token::native_mint::id().as_ref(),
+                &funding_chain_id.to_le_bytes(),
+            ],
+            &self.program_id,
+        )
+        .0;
+        let remote_aggregate = Pubkey::find_program_address(
+            &[
+                REMOTE_AGGREGATE_SEED,
+                strategy.as_ref(),
+                spl_token::native_mint::id().as_ref(),
+            ],
+            &self.program_id,
+        )
+        .0;
+        let relay_receipt = Pubkey::find_program_address(
+            &[
+                RELAY_RECEIPT_SEED,
+                strategy.as_ref(),
+                relay_order_id.as_ref(),
+                &[RELAY_ACTION_REMOTE_SELL],
+            ],
+            &self.program_id,
+        )
+        .0;
+        let relay_pending_sell = Pubkey::find_program_address(
+            &[
+                RELAY_PENDING_SELL_SEED,
+                strategy.as_ref(),
+                relay_order_id.as_ref(),
+            ],
+            &self.program_id,
+        )
+        .0;
+        let forwarder_usdc = get_associated_token_address(&self.forwarder, &self.usdc_mint);
+        let relay_vault_usdc = get_associated_token_address(
+            &strategy_spend::processor::RELAY_FORWARDER_PROGRAM_ID,
+            &self.usdc_mint,
+        );
+
+        let mut swap_ix_data = vec![7u8];
+        swap_ix_data.extend_from_slice(&sell_quantity.to_le_bytes());
+        swap_ix_data.extend_from_slice(&return_usdc.to_le_bytes());
+
+        Instruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta::new_readonly(self.session.pubkey(), true),
+                AccountMeta::new(self.relayer.pubkey(), true),
+                AccountMeta::new_readonly(self.owner.pubkey(), false),
+                AccountMeta::new_readonly(
+                    wallet_pda(&self.program_id, &self.owner.pubkey()),
+                    false,
+                ),
+                AccountMeta::new(strategy, false),
+                AccountMeta::new(vault_authority, false),
+                AccountMeta::new(wsol_vault, false),
+                AccountMeta::new_readonly(spl_token::native_mint::id(), false),
+                AccountMeta::new(remote_asset, false),
+                AccountMeta::new(remote_aggregate, false),
+                AccountMeta::new(relay_receipt, false),
+                AccountMeta::new(relay_pending_sell, false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(system_program::id(), false),
+                AccountMeta::new_readonly(self.jupiter_program, false),
+                AccountMeta::new_readonly(
+                    strategy_spend::processor::RELAY_FORWARDER_PROGRAM_ID,
+                    false,
+                ),
+                // Swap leg: vault WSOL out, USDC into the Relay forwarder.
+                AccountMeta::new_readonly(vault_authority, false),
+                AccountMeta::new(wsol_vault, false),
+                AccountMeta::new(forwarder_usdc, false),
+                AccountMeta::new(spl_token::native_mint::id(), false),
+                AccountMeta::new(self.usdc_mint, false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new(self.native_output_wsol, false),
+                // forward_token leg.
+                AccountMeta::new_readonly(vault_authority, false),
+                AccountMeta::new_readonly(self.forwarder, false),
+                AccountMeta::new(forwarder_usdc, false),
+                AccountMeta::new(relay_vault_usdc, false),
+                AccountMeta::new_readonly(self.usdc_mint, false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+            ],
+            data: StrategySpendInstruction::ExecuteRemoteRelaySell {
+                relay_order_id,
+                funding_chain_id,
+                sell_quantity,
+                min_return_usdc: return_usdc,
+                nonce,
+                deadline: EXPIRES_AT,
+                swap_ix_data,
+                relay_ix_data: relay_order_id.to_vec(),
             }
             .try_to_vec()
             .unwrap(),
@@ -1450,6 +1986,23 @@ async fn execute_swap_v2_credit_only_uses_existing_credit_without_new_debit() {
 }
 
 #[tokio::test]
+async fn execute_swap_v2_credit_only_buys_native_sol() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.execute_wsol_credit_only_ix(),
+    )
+    .await
+    .unwrap();
+
+    let state = h.read_strategy(&mut banks_client).await;
+    assert_eq!(state.deployed_usdc, 200_000_000);
+}
+
+#[tokio::test]
 async fn execute_swap_v2_native_output_splits_gas_and_records_net_inventory() {
     let (h, mut banks_client, payer) = TestHarness::start().await;
     bootstrap(&h, &mut banks_client, &payer).await;
@@ -1646,4 +2199,235 @@ async fn credit_relay_wraps_native_sol_into_wsol_surplus() {
     )
     .unwrap();
     assert_eq!(aggregate.total_accounted, credit_quantity);
+}
+
+#[tokio::test]
+async fn relay_deposit_sends_vault_usdc_through_the_depository() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    let strategy = strategy_pda(&h.program_id, &h.owner.pubkey(), &h.strategy_id);
+    let vault_authority =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &h.program_id).0;
+    let amount = 25_000_000u64;
+    let platform_fee = 250_000u64;
+
+    send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.relay_deposit_ix([21u8; 32], 8453, amount, platform_fee, 0),
+    )
+    .await
+    .unwrap();
+
+    let relay_vault = Pubkey::find_program_address(&[VAULT_SEED], &h.relay_depository).0;
+    assert_eq!(
+        token_balance(
+            &mut banks_client,
+            get_associated_token_address(&relay_vault, &h.usdc_mint)
+        )
+        .await,
+        amount - platform_fee
+    );
+    assert_eq!(
+        token_balance(
+            &mut banks_client,
+            get_associated_token_address(&vault_authority, &h.usdc_mint)
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        token_balance(
+            &mut banks_client,
+            get_associated_token_address(&h.treasury.pubkey(), &h.usdc_mint)
+        )
+        .await,
+        platform_fee
+    );
+    assert_eq!(
+        token_balance(
+            &mut banks_client,
+            get_associated_token_address(&h.owner.pubkey(), &h.usdc_mint)
+        )
+        .await,
+        LIMIT_USDC - amount
+    );
+}
+
+/// A position sold on an EVM venue records its pending sell on that chain, so
+/// the Solana funding-chain credit has no local record to consume.
+#[tokio::test]
+async fn credit_usdc_return_accepts_a_remote_origin_sell() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    let strategy = strategy_pda(&h.program_id, &h.owner.pubkey(), &h.strategy_id);
+    let vault_authority =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &h.program_id).0;
+    let owner_usdc = get_associated_token_address(&h.owner.pubkey(), &h.usdc_mint);
+    let vault_usdc = get_associated_token_address(&vault_authority, &h.usdc_mint);
+
+    send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.relay_deposit_ix([31u8; 32], 8453, 25_000_000, 250_000, 0),
+    )
+    .await
+    .unwrap();
+
+    // Relay delivers the sell proceeds to the vault, which is what the credit
+    // pays the fee and the owner out of.
+    send(
+        &mut banks_client,
+        &payer,
+        &[&payer, &h.owner],
+        token_instruction::transfer_checked(
+            &spl_token::id(),
+            &owner_usdc,
+            &h.usdc_mint,
+            &vault_usdc,
+            &h.owner.pubkey(),
+            &[],
+            26_000_000,
+            6,
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.credit_usdc_return_ix([32u8; 32], 8453, 26_000_000, 24_750_000, 260_000, 1),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(token_balance(&mut banks_client, vault_usdc).await, 0);
+    assert_eq!(
+        token_balance(&mut banks_client, owner_usdc).await,
+        LIMIT_USDC - 25_000_000 - 26_000_000 + 26_000_000 - 260_000
+    );
+    assert_eq!(
+        token_balance(
+            &mut banks_client,
+            get_associated_token_address(&h.treasury.pubkey(), &h.usdc_mint)
+        )
+        .await,
+        250_000 + 260_000
+    );
+    let state = h.read_strategy(&mut banks_client).await;
+    assert_eq!(state.deployed_usdc, 0);
+}
+
+async fn token_balance(
+    banks_client: &mut solana_program_test::BanksClient,
+    account: Pubkey,
+) -> u64 {
+    TokenAccount::unpack(
+        &banks_client
+            .get_account(account)
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+    )
+    .unwrap()
+    .amount
+}
+
+#[tokio::test]
+async fn remote_relay_sell_swaps_inventory_into_the_relay_forwarder() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    let strategy = strategy_pda(&h.program_id, &h.owner.pubkey(), &h.strategy_id);
+    let vault_authority =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &h.program_id).0;
+    let wsol_vault = get_associated_token_address(&vault_authority, &spl_token::native_mint::id());
+    let sell_quantity = 29_850_255u64;
+    let return_usdc = 2_922_821u64;
+    send(
+        &mut banks_client,
+        &payer,
+        &[&payer],
+        system_instruction::transfer(&payer.pubkey(), &vault_authority, sell_quantity),
+    )
+    .await
+    .unwrap();
+    send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.credit_relay_asset_ix([11u8; 32], 8453, sell_quantity, 3_039_707),
+    )
+    .await
+    .unwrap();
+
+    send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.remote_relay_sell_ix([12u8; 32], 8453, sell_quantity, return_usdc, 1),
+    )
+    .await
+    .unwrap();
+
+    let vault = TokenAccount::unpack(
+        &banks_client
+            .get_account(wsol_vault)
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    assert_eq!(vault.amount, 0);
+    let relay_vault_usdc = TokenAccount::unpack(
+        &banks_client
+            .get_account(get_associated_token_address(
+                &strategy_spend::processor::RELAY_FORWARDER_PROGRAM_ID,
+                &h.usdc_mint,
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    assert_eq!(relay_vault_usdc.amount, return_usdc);
+    let forwarder_usdc = TokenAccount::unpack(
+        &banks_client
+            .get_account(get_associated_token_address(&h.forwarder, &h.usdc_mint))
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    assert_eq!(forwarder_usdc.amount, 0);
+
+    let remote_asset = Pubkey::find_program_address(
+        &[
+            REMOTE_ASSET_SEED,
+            strategy.as_ref(),
+            spl_token::native_mint::id().as_ref(),
+            &8453u64.to_le_bytes(),
+        ],
+        &h.program_id,
+    )
+    .0;
+    let remote = RemoteStrategyAsset::try_from_slice(
+        &banks_client
+            .get_account(remote_asset)
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    assert_eq!(remote.quantity, 0);
+    assert_eq!(remote.cost_usdc, 0);
 }

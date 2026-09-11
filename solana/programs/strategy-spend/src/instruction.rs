@@ -68,6 +68,11 @@ pub enum StrategySpendInstruction {
         deadline: i64,
     },
     /// Destination-chain remote Relay sell consuming recorded inventory.
+    ///
+    /// `swap_ix_data` is the Relay-routed Jupiter swap that turns the sold
+    /// inventory into USDC in Relay's forwarder account, prefixed with the
+    /// number of trailing accounts that belong to the swap leg. The remaining
+    /// accounts belong to the `forward_token` leg in `relay_ix_data`.
     ExecuteRemoteRelaySell {
         relay_order_id: [u8; 32],
         funding_chain_id: u64,
@@ -75,12 +80,19 @@ pub enum StrategySpendInstruction {
         min_return_usdc: u64,
         nonce: u64,
         deadline: i64,
+        swap_ix_data: Vec<u8>,
         relay_ix_data: Vec<u8>,
     },
     /// Funding-chain credit of verified USDC return from a remote sell.
+    ///
+    /// `origin_chain_id` names the chain the sell executed on. A Solana origin
+    /// left a pending-sell record in this program, which binds the released
+    /// quantity and cost; a remote origin recorded it on that chain instead,
+    /// so the released amounts come from the session-signed intent.
     CreditUsdcReturn {
         relay_order_id: [u8; 32],
         funding_chain_id: u64,
+        origin_chain_id: u64,
         gross_return_usdc: u64,
         quantity_released: u64,
         cost_released_usdc: u64,

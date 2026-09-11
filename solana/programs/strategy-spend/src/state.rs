@@ -13,6 +13,9 @@ pub const REMOTE_ASSET_SEED: &[u8] = b"remote-asset";
 pub const REMOTE_AGGREGATE_SEED: &[u8] = b"remote-aggregate";
 pub const NATIVE_VAULT_SEED: &[u8] = b"native-vault";
 
+/// Relay's chain id for Solana, used to tell a local sell from a remote one.
+pub const SOLANA_RELAY_CHAIN_ID: u64 = 792_703_809;
+
 pub const RELAY_ACTION_DEPOSIT: u8 = 0;
 pub const RELAY_ACTION_CREDIT_ASSET: u8 = 1;
 pub const RELAY_ACTION_REMOTE_SELL: u8 = 2;

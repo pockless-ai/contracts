@@ -27,11 +27,17 @@ use crate::state::{
     RELAY_ACTION_DEPOSIT_RELEASE, RELAY_ACTION_GAS_TOP_UP, RELAY_ACTION_GAS_TOP_UP_RELEASE,
     RELAY_ACTION_REMOTE_SELL, RELAY_ACTION_USDC_RETURN, RELAY_PENDING_DEPOSIT_SEED,
     RELAY_PENDING_SELL_SEED, RELAY_RECEIPT_SEED, REMOTE_AGGREGATE_SEED, REMOTE_ASSET_SEED,
-    STRATEGY_SEED, VAULT_SEED, WALLET_SEED,
+    SOLANA_RELAY_CHAIN_ID, STRATEGY_SEED, VAULT_SEED, WALLET_SEED,
 };
 
 const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     solana_program::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+
+/// Relay's `relay_forwarder`. Relay never quotes a bare depository deposit for
+/// a non-USDC Solana origin: the route swaps into a forwarder token account and
+/// `forward_token` sweeps whatever landed there into the depository.
+pub const RELAY_FORWARDER_PROGRAM_ID: Pubkey =
+    solana_program::pubkey!("DPArtTLbEqa6EuXHfL5UFLBZhFjiEXWRudhvXDrjwXUr");
 
 pub fn process_instruction(
     program_id: &Pubkey,
@@ -145,6 +151,7 @@ pub fn process_instruction(
             min_return_usdc,
             nonce,
             deadline,
+            swap_ix_data,
             relay_ix_data,
         } => execute_remote_relay_sell(
             program_id,
@@ -155,11 +162,13 @@ pub fn process_instruction(
             min_return_usdc,
             nonce,
             deadline,
+            swap_ix_data,
             relay_ix_data,
         ),
         StrategySpendInstruction::CreditUsdcReturn {
             relay_order_id,
             funding_chain_id,
+            origin_chain_id,
             gross_return_usdc,
             quantity_released,
             cost_released_usdc,
@@ -171,6 +180,7 @@ pub fn process_instruction(
             accounts,
             relay_order_id,
             funding_chain_id,
+            origin_chain_id,
             gross_return_usdc,
             quantity_released,
             cost_released_usdc,
@@ -882,6 +892,16 @@ fn validate_fee_fields(
     Ok(())
 }
 
+/// Route payloads for a CPI leg prefix their instruction data with the number
+/// of trailing accounts that belong to that leg.
+fn parse_leg_account_count(data: &[u8]) -> Result<(usize, &[u8]), ProgramError> {
+    let count = usize::from(*data.first().ok_or(StrategySpendError::InvalidInstruction)?);
+    if count == 0 {
+        return Err(StrategySpendError::InvalidInstruction.into());
+    }
+    Ok((count, &data[1..]))
+}
+
 fn parse_gas_jupiter_data(
     gas_jupiter_data: &[u8],
     gas_reimburse_usdc: u64,
@@ -889,11 +909,7 @@ fn parse_gas_jupiter_data(
     if gas_reimburse_usdc == 0 {
         return Ok((0, &[]));
     }
-    let gas_account_count = usize::from(gas_jupiter_data[0]);
-    if gas_account_count == 0 {
-        return Err(StrategySpendError::InvalidInstruction.into());
-    }
-    Ok((gas_account_count, &gas_jupiter_data[1..]))
+    parse_leg_account_count(gas_jupiter_data)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1574,8 +1590,8 @@ fn consume_relay_receipt<'a>(
     Ok(())
 }
 
-fn cpi_relay_depository<'account>(
-    wallet: &WalletConfig,
+fn cpi_relay_program<'account>(
+    expected_program: &Pubkey,
     relay_depository: &AccountInfo<'account>,
     relay_ix_data: &[u8],
     remaining: &[AccountInfo<'account>],
@@ -1585,7 +1601,7 @@ fn cpi_relay_depository<'account>(
     protected_accounts: &[&Pubkey],
     outer_signers: &[&Pubkey],
 ) -> ProgramResult {
-    if relay_depository.key != &wallet.relay_depository_program {
+    if relay_depository.key != expected_program {
         return Err(StrategySpendError::ProgramMismatch.into());
     }
     if relay_ix_data.is_empty() || remaining.is_empty() {
@@ -2042,27 +2058,25 @@ fn execute_relay_deposit(
     }
 
     let remaining_accounts = account_iter.cloned().collect::<Vec<_>>();
+    // `deposit_token` spends the vault USDC account with the vault as sender
+    // and names the owner as depositor, so those accounts (and the shared
+    // programs) stay reachable; only strategy state and the accounts the
+    // deposit has no business touching are withheld. The owner is passed
+    // read-only and never signs, so it cannot be spent from here.
     let protected = [
         session.key,
         platform_relayer.key,
-        owner.key,
         wallet.key,
         strategy.key,
-        vault_authority.key,
         owner_usdc.key,
-        strategy_usdc.key,
         program_authority.key,
         relay_receipt.key,
         relay_pending_deposit.key,
         treasury_usdc.key,
-        usdc_mint.key,
-        token_program.key,
-        associated_token_program.key,
-        system_program_account.key,
         relay_depository.key,
     ];
-    cpi_relay_depository(
-        &wallet_config,
+    cpi_relay_program(
+        &wallet_config.relay_depository_program,
         relay_depository,
         &relay_ix_data,
         &remaining_accounts,
@@ -2254,6 +2268,7 @@ fn execute_remote_relay_sell(
     min_return_usdc: u64,
     nonce: u64,
     deadline: i64,
+    swap_ix_data: Vec<u8>,
     relay_ix_data: Vec<u8>,
 ) -> ProgramResult {
     if sell_quantity == 0 || min_return_usdc == 0 {
@@ -2275,7 +2290,8 @@ fn execute_remote_relay_sell(
     let relay_pending_sell = next_account_info(account_iter)?;
     let token_program = next_account_info(account_iter)?;
     let system_program_account = next_account_info(account_iter)?;
-    let relay_depository = next_account_info(account_iter)?;
+    let jupiter_program = next_account_info(account_iter)?;
+    let relay_forwarder = next_account_info(account_iter)?;
 
     if !session.is_signer {
         return Err(StrategySpendError::MissingSignature.into());
@@ -2291,6 +2307,9 @@ fn execute_remote_relay_sell(
     assert_relay_intent(&strategy_state, nonce, deadline)?;
     assert_system_program(system_program_account)?;
     assert_token_program(token_program, &wallet_config)?;
+    if jupiter_program.key != &wallet_config.jupiter_program {
+        return Err(StrategySpendError::ProgramMismatch.into());
+    }
 
     let (expected_vault_authority, vault_bump) =
         Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
@@ -2359,33 +2378,68 @@ fn execute_remote_relay_sell(
         pending_bump,
     )?;
 
+    let (swap_account_count, swap_route_data) = parse_leg_account_count(&swap_ix_data)?;
     let remaining_accounts = account_iter.cloned().collect::<Vec<_>>();
-    let protected = [
+    if remaining_accounts.len() <= swap_account_count {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    let (swap_accounts, relay_accounts) = remaining_accounts.split_at(swap_account_count);
+
+    // The swap leg spends the sold inventory, so the token vault stays
+    // reachable there and is protected only from the forwarder leg.
+    let swap_protected = [
         session.key,
         platform_relayer.key,
         owner.key,
         wallet.key,
         strategy.key,
-        vault_authority.key,
-        strategy_token_vault.key,
-        token_mint.key,
         remote_asset.key,
         remote_aggregate.key,
         relay_receipt.key,
         relay_pending_sell.key,
-        token_program.key,
-        system_program_account.key,
-        relay_depository.key,
     ];
-    cpi_relay_depository(
-        &wallet_config,
-        relay_depository,
-        &relay_ix_data,
-        &remaining_accounts,
+    let relay_protected = [
+        session.key,
+        platform_relayer.key,
+        owner.key,
+        wallet.key,
+        strategy.key,
+        strategy_token_vault.key,
+        remote_asset.key,
+        remote_aggregate.key,
+        relay_receipt.key,
+        relay_pending_sell.key,
+    ];
+
+    let vault_before = token_account_amount(strategy_token_vault)?;
+    cpi_jupiter(
+        jupiter_program,
+        swap_accounts,
+        swap_route_data,
         vault_authority,
         strategy.key,
         vault_bump,
-        &protected,
+        &swap_protected,
+        &[platform_relayer.key],
+    )?;
+    let vault_after = token_account_amount(strategy_token_vault)?;
+    if vault_before
+        .checked_sub(vault_after)
+        .ok_or(StrategySpendError::Overflow)?
+        != sell_quantity
+    {
+        return Err(StrategySpendError::InsufficientRemoteAsset.into());
+    }
+
+    cpi_relay_program(
+        &RELAY_FORWARDER_PROGRAM_ID,
+        relay_forwarder,
+        &relay_ix_data,
+        relay_accounts,
+        vault_authority,
+        strategy.key,
+        vault_bump,
+        &relay_protected,
         &[platform_relayer.key],
     )?;
 
@@ -2416,6 +2470,7 @@ fn credit_usdc_return(
     accounts: &[AccountInfo],
     relay_order_id: [u8; 32],
     funding_chain_id: u64,
+    origin_chain_id: u64,
     gross_return_usdc: u64,
     quantity_released: u64,
     cost_released_usdc: u64,
@@ -2535,16 +2590,22 @@ fn credit_usdc_return(
         .checked_sub(cost_released_usdc)
         .ok_or(StrategySpendError::Overflow)?;
 
-    require_relay_pending_sell(
-        relay_pending_sell,
-        program_id,
-        strategy.key,
-        &strategy_state.strategy_id,
-        &relay_order_id,
-        funding_chain_id,
-        quantity_released,
-        cost_released_usdc,
-    )?;
+    // A sell that ran on this chain left a pending record binding the released
+    // quantity and cost. When the sell ran on a remote chain that record lives
+    // there, so the intent's amounts are what the session signed for.
+    let local_origin = origin_chain_id == SOLANA_RELAY_CHAIN_ID;
+    if local_origin {
+        require_relay_pending_sell(
+            relay_pending_sell,
+            program_id,
+            strategy.key,
+            &strategy_state.strategy_id,
+            &relay_order_id,
+            funding_chain_id,
+            quantity_released,
+            cost_released_usdc,
+        )?;
+    }
     consume_relay_receipt(
         relay_receipt,
         strategy,
@@ -2554,7 +2615,9 @@ fn credit_usdc_return(
         platform_relayer,
         system_program_account,
     )?;
-    close_relay_pending_sell(relay_pending_sell, platform_relayer)?;
+    if local_origin {
+        close_relay_pending_sell(relay_pending_sell, platform_relayer)?;
+    }
     bump_nonce(&mut strategy_state)?;
     strategy_state.serialize(&mut &mut strategy.data.borrow_mut()[..])?;
     Ok(())
@@ -2827,8 +2890,8 @@ fn execute_relay_gas_top_up(
     .serialize(&mut &mut relay_pending_gas.data.borrow_mut()[..])?;
 
     let remaining_accounts = account_iter.cloned().collect::<Vec<_>>();
-    cpi_relay_depository(
-        &wallet_config,
+    cpi_relay_program(
+        &wallet_config.relay_depository_program,
         relay_depository,
         &relay_ix_data,
         &remaining_accounts,

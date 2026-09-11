@@ -84,6 +84,7 @@ test("instruction variant indices match the program enum", () => {
       minReturnUsdc: 2n,
       nonce: 3n,
       deadline: 4n,
+      swapIxData: Buffer.from([3, 8]),
       relayIxData: Buffer.from([9]),
     })[0],
     10
@@ -92,6 +93,7 @@ test("instruction variant indices match the program enum", () => {
     encodeCreditUsdcReturn({
       relayOrderId,
       fundingChainId: 1n,
+      originChainId: 8453n,
       grossReturnUsdc: 1n,
       quantityReleased: 2n,
       costReleasedUsdc: 3n,
