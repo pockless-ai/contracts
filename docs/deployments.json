@@ -11,7 +11,7 @@
       "txHash": "0x00b66142c1cdd034cf5861f4ec5d8146e2b9462923499da753b324d865e749ff",
       "codeHash": "0x0d4eee0eb9a86a73e95e98eeb1cb4fc274b55086a18569c1f29f33e5d34cbf0a",
       "verifiedAt": "2026-09-10T19:42:55.201Z",
-      "releaseCommit": "051cf1fb0145a80440dcad99127325ab9ff6969b",
+      "releaseCommit": "b7f8a9bf128c9d87206dba863a9bf13c3693a867",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -56,7 +56,7 @@
       "txHash": "0xa1f382b718022e8a32bfaa01b248f15b61e85f41fd7cc822196b184256a0e32e",
       "codeHash": "0xc0e0d8bd31d1efe2105311c0bcad2d454e1695c519033900909c478e1b950d38",
       "verifiedAt": "2026-09-10T20:37:46.965Z",
-      "releaseCommit": "051cf1fb0145a80440dcad99127325ab9ff6969b",
+      "releaseCommit": "b7f8a9bf128c9d87206dba863a9bf13c3693a867",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -101,7 +101,7 @@
       "txHash": "0x92f29005e5d0b3032501de575a2e57cfffba7e65b8d94042a122523a11a89371",
       "codeHash": "0xe93a7c35131a189bac37d2635c1ac5d30f261004209b85d10d7931d605446009",
       "verifiedAt": "2026-09-10T20:37:46.960Z",
-      "releaseCommit": "051cf1fb0145a80440dcad99127325ab9ff6969b",
+      "releaseCommit": "b7f8a9bf128c9d87206dba863a9bf13c3693a867",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -145,7 +145,7 @@
       "status": "deployed",
       "txHash": "0x26e3f94f36e42269d2ed61383335b3ef603bc7262beaea5d381f7f227ef642b9",
       "codeHash": "0xde760360d3d970ad8024504f95f4fc591c5bd97a6cc6db98ae22e4b93165a209",
-      "releaseCommit": "051cf1fb0145a80440dcad99127325ab9ff6969b",
+      "releaseCommit": "b7f8a9bf128c9d87206dba863a9bf13c3693a867",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -191,7 +191,7 @@
       "txHash": "0xdbf1ca78b32231136669b21eea602a219a1126f146adc5c3d5e9679aaf2fdbfc",
       "codeHash": "0x96ded007a454aa1981cc77d3da766b3666ee89356b4e8be822a5752b826c33fa",
       "verifiedAt": "2026-09-10T19:55:52.329Z",
-      "releaseCommit": "051cf1fb0145a80440dcad99127325ab9ff6969b",
+      "releaseCommit": "b7f8a9bf128c9d87206dba863a9bf13c3693a867",
       "releases": [
         {
           "implementation": "0x739a8eF0A0f8aFb3909070e77D9963029C1D2508",
@@ -236,7 +236,7 @@
       "txHash": "0xc9e65eacb8f7ac41abad05b62984f273716eb0d2e694a4db2c7188605f4d9b8b",
       "codeHash": "0xefe7f3e74bb68aa20b18cd1d4ab3eaa1c7b3c2c51369d9a16b8942c39c908b5e",
       "verifiedAt": "2026-09-10T20:27:36.043Z",
-      "releaseCommit": "051cf1fb0145a80440dcad99127325ab9ff6969b",
+      "releaseCommit": "b7f8a9bf128c9d87206dba863a9bf13c3693a867",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
