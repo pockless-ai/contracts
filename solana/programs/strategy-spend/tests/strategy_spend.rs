@@ -22,8 +22,9 @@ use spl_token::{
 };
 use strategy_spend::instruction::{GasMode, StrategySpendInstruction};
 use strategy_spend::state::{
-    StrategyAccount, StrategyAsset, WalletConfig, ASSET_SEED, AUTHORITY_SEED, STRATEGY_SEED,
-    VAULT_SEED, WALLET_SEED,
+    RemoteMintAggregate, RemoteStrategyAsset, StrategyAccount, StrategyAsset, WalletConfig,
+    ASSET_SEED, AUTHORITY_SEED, RELAY_ACTION_CREDIT_ASSET, RELAY_RECEIPT_SEED,
+    REMOTE_AGGREGATE_SEED, REMOTE_ASSET_SEED, STRATEGY_SEED, VAULT_SEED, WALLET_SEED,
 };
 
 const LIMIT_USDC: u64 = 1_000_000_000;
@@ -823,6 +824,79 @@ impl TestHarness {
         let account = banks_client.get_account(strategy).await.unwrap().unwrap();
         StrategyAccount::try_from_slice(&account.data).unwrap()
     }
+
+    fn credit_relay_asset_ix(
+        &self,
+        relay_order_id: [u8; 32],
+        funding_chain_id: u64,
+        credit_quantity: u64,
+        cost_usdc: u64,
+    ) -> Instruction {
+        let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
+        let vault_authority =
+            Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &self.program_id).0;
+        let wsol_vault =
+            get_associated_token_address(&vault_authority, &spl_token::native_mint::id());
+        let remote_asset = Pubkey::find_program_address(
+            &[
+                REMOTE_ASSET_SEED,
+                strategy.as_ref(),
+                spl_token::native_mint::id().as_ref(),
+                &funding_chain_id.to_le_bytes(),
+            ],
+            &self.program_id,
+        )
+        .0;
+        let remote_aggregate = Pubkey::find_program_address(
+            &[
+                REMOTE_AGGREGATE_SEED,
+                strategy.as_ref(),
+                spl_token::native_mint::id().as_ref(),
+            ],
+            &self.program_id,
+        )
+        .0;
+        let relay_receipt = Pubkey::find_program_address(
+            &[
+                RELAY_RECEIPT_SEED,
+                strategy.as_ref(),
+                relay_order_id.as_ref(),
+                &[RELAY_ACTION_CREDIT_ASSET],
+            ],
+            &self.program_id,
+        )
+        .0;
+        Instruction {
+            program_id: self.program_id,
+            accounts: vec![
+                AccountMeta::new_readonly(self.session.pubkey(), true),
+                AccountMeta::new(self.relayer.pubkey(), true),
+                AccountMeta::new_readonly(self.owner.pubkey(), false),
+                AccountMeta::new_readonly(wallet_pda(&self.program_id, &self.owner.pubkey()), false),
+                AccountMeta::new(strategy, false),
+                AccountMeta::new(vault_authority, false),
+                AccountMeta::new(wsol_vault, false),
+                AccountMeta::new_readonly(spl_token::native_mint::id(), false),
+                AccountMeta::new(remote_asset, false),
+                AccountMeta::new(remote_aggregate, false),
+                AccountMeta::new(relay_receipt, false),
+                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(system_program::id(), false),
+            ],
+            data: StrategySpendInstruction::CreditRelayAsset {
+                relay_order_id,
+                funding_chain_id,
+                credit_quantity,
+                cost_usdc,
+                min_credit_qty: credit_quantity,
+                max_credit_qty: credit_quantity,
+                nonce: 0,
+                deadline: EXPIRES_AT,
+            }
+            .try_to_vec()
+            .unwrap(),
+        }
+    }
 }
 
 async fn send(
@@ -1476,4 +1550,93 @@ async fn pro_rata_cost_matches_on_chain_math() {
     let sold_qty = 100u64;
     let expected = total_cost * sold_qty / total_qty;
     assert_eq!(expected, 300);
+}
+
+#[tokio::test]
+async fn credit_relay_wraps_native_sol_into_wsol_surplus() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    let strategy = strategy_pda(&h.program_id, &h.owner.pubkey(), &h.strategy_id);
+    let vault_authority =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &h.program_id).0;
+    let wsol_vault = get_associated_token_address(&vault_authority, &spl_token::native_mint::id());
+    let credit_quantity = 29_850_255u64;
+    let leftover = 20_149_745u64;
+    send(
+        &mut banks_client,
+        &payer,
+        &[&payer],
+        system_instruction::transfer(&payer.pubkey(), &vault_authority, credit_quantity + leftover),
+    )
+    .await
+    .unwrap();
+
+    send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.credit_relay_asset_ix([7u8; 32], 8453, credit_quantity, 3_000_000),
+    )
+    .await
+    .unwrap();
+
+    let wsol = TokenAccount::unpack(
+        &banks_client
+            .get_account(wsol_vault)
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    assert_eq!(wsol.amount, credit_quantity);
+    assert_eq!(
+        banks_client
+            .get_account(vault_authority)
+            .await
+            .unwrap()
+            .unwrap()
+            .lamports,
+        leftover
+    );
+    let remote_asset = Pubkey::find_program_address(
+        &[
+            REMOTE_ASSET_SEED,
+            strategy.as_ref(),
+            spl_token::native_mint::id().as_ref(),
+            &8453u64.to_le_bytes(),
+        ],
+        &h.program_id,
+    )
+    .0;
+    let remote = RemoteStrategyAsset::try_from_slice(
+        &banks_client
+            .get_account(remote_asset)
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    assert_eq!(remote.quantity, credit_quantity);
+    assert_eq!(remote.cost_usdc, 3_000_000);
+    let remote_aggregate = Pubkey::find_program_address(
+        &[
+            REMOTE_AGGREGATE_SEED,
+            strategy.as_ref(),
+            spl_token::native_mint::id().as_ref(),
+        ],
+        &h.program_id,
+    )
+    .0;
+    let aggregate = RemoteMintAggregate::try_from_slice(
+        &banks_client
+            .get_account(remote_aggregate)
+            .await
+            .unwrap()
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    assert_eq!(aggregate.total_accounted, credit_quantity);
 }

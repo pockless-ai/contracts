@@ -1752,6 +1752,41 @@ fn vault_token_surplus(
         .ok_or(StrategySpendError::InsufficientVaultSurplus.into())
 }
 
+fn wrap_vault_native_sol<'a>(
+    vault_authority: &AccountInfo<'a>,
+    wsol_vault: &AccountInfo<'a>,
+    token_program: &AccountInfo<'a>,
+    system_program_account: &AccountInfo<'a>,
+    strategy: &Pubkey,
+    vault_bump: u8,
+    amount: u64,
+) -> ProgramResult {
+    if amount == 0 {
+        return Ok(());
+    }
+    if !vault_authority.is_writable || !wsol_vault.is_writable {
+        return Err(StrategySpendError::InvalidAccount.into());
+    }
+    assert_native_vault(wsol_vault, vault_authority.key, token_program.key)?;
+    if vault_authority.lamports() < amount {
+        return Err(StrategySpendError::InsufficientVaultSurplus.into());
+    }
+    invoke_signed(
+        &system_instruction::transfer(vault_authority.key, wsol_vault.key, amount),
+        &[
+            vault_authority.clone(),
+            wsol_vault.clone(),
+            system_program_account.clone(),
+        ],
+        &[&[VAULT_SEED, strategy.as_ref(), &[vault_bump]]],
+    )?;
+    invoke(
+        &token_instruction::sync_native(token_program.key, wsol_vault.key)?,
+        &[wsol_vault.clone(), token_program.clone()],
+    )?;
+    Ok(())
+}
+
 fn ensure_remote_aggregate<'a>(
     aggregate: &AccountInfo<'a>,
     strategy: &AccountInfo<'a>,
@@ -2154,7 +2189,22 @@ fn credit_relay_asset(
     )?;
 
     let mut aggregate = load_remote_aggregate(remote_aggregate)?;
-    let surplus = vault_token_surplus(strategy_token_vault, &aggregate)?;
+    let mut surplus = vault_token_surplus(strategy_token_vault, &aggregate)?;
+    if surplus < credit_quantity && token_mint.key == &spl_token::native_mint::id() {
+        let needed = credit_quantity
+            .checked_sub(surplus)
+            .ok_or(StrategySpendError::Overflow)?;
+        wrap_vault_native_sol(
+            vault_authority,
+            strategy_token_vault,
+            token_program,
+            system_program_account,
+            strategy.key,
+            vault_bump,
+            needed,
+        )?;
+        surplus = vault_token_surplus(strategy_token_vault, &aggregate)?;
+    }
     let allowed = surplus.min(max_credit_qty);
     if allowed < min_credit_qty || allowed != credit_quantity {
         return Err(StrategySpendError::InsufficientVaultSurplus.into());
