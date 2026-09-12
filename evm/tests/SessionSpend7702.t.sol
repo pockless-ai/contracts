@@ -232,9 +232,8 @@ contract SessionSpend7702Test is Test {
         _swapBundleV2(buy, address(this));
 
         uint256 quantity = address(wallet).balance;
-        SessionSpendBase.SwapBundleIntentV2 memory sell = _buyBundleIntentV2(
-            quantity, 1, 0, SessionSpendBase.GasFundingMode.CREDIT_ONLY, 0, 0
-        );
+        SessionSpendBase.SwapBundleIntentV2 memory sell =
+            _buyBundleIntentV2(quantity, 1, 0, SessionSpendBase.GasFundingMode.CREDIT_ONLY, 0, 0);
         sell.sellToken = address(0);
         sell.buyToken = address(usdc);
         uint256 usdcBefore = usdc.balanceOf(address(wallet));

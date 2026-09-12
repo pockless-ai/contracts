@@ -1578,8 +1578,9 @@ abstract contract SessionSpendBase {
             bytes memory targetCalldata
         ) = abi.decode(_routerArgs(routerCalldata), (address, address, uint256, address, bytes));
         if (
-            !_routerTokenMatches(sellToken, calldataSellToken) || calldataSellAmount != maxSellAmount
-                || operator == address(0) || target == address(0) || operator != target
+            !_routerTokenMatches(sellToken, calldataSellToken)
+                || calldataSellAmount != maxSellAmount || operator == address(0)
+                || target == address(0) || operator != target
         ) revert RouterFieldsMismatch();
         if (targetCalldata.length < 4) revert RouterFieldsMismatch();
     }
