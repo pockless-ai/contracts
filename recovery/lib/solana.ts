@@ -9,8 +9,12 @@ import {
 } from "@pockless/protocol-sdk"
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  addExtraAccountMetasForExecute,
   getAssociatedTokenAddressSync,
+  getTransferHook,
+  unpackMint,
 } from "@solana/spl-token"
 import {
   Connection,
@@ -89,25 +93,42 @@ export function buildRevokeInstruction(input: {
   })
 }
 
-export function buildWithdrawInstruction(input: {
+export async function buildWithdrawInstruction(input: {
+  connection: Connection
   programId: PublicKey
   owner: PublicKey
   strategyId: Uint8Array
   mint: PublicKey
   amount: bigint
 }) {
+  const mintAccount = await input.connection.getAccountInfo(input.mint)
+  if (!mintAccount) throw new Error(`Mint ${input.mint.toBase58()} does not exist`)
+  const tokenProgram = mintAccount.owner
+  if (
+    !tokenProgram.equals(TOKEN_PROGRAM_ID) &&
+    !tokenProgram.equals(TOKEN_2022_PROGRAM_ID)
+  ) {
+    throw new Error(`Mint ${input.mint.toBase58()} is not a token mint`)
+  }
+
   const [wallet] = walletPda(input.programId, input.owner)
   const [strategy] = strategyPda(input.programId, input.owner, input.strategyId)
   const [vaultAuthority] = vaultPda(input.programId, strategy)
   const strategyVault = getAssociatedTokenAddressSync(
     input.mint,
     vaultAuthority,
-    true
+    true,
+    tokenProgram
   )
-  const ownerToken = getAssociatedTokenAddressSync(input.mint, input.owner)
+  const ownerToken = getAssociatedTokenAddressSync(
+    input.mint,
+    input.owner,
+    false,
+    tokenProgram
+  )
   const [assetAccount] = assetPda(input.programId, strategy, input.mint)
 
-  return new TransactionInstruction({
+  const instruction = new TransactionInstruction({
     programId: input.programId,
     keys: [
       { pubkey: input.owner, isSigner: true, isWritable: false },
@@ -118,12 +139,30 @@ export function buildWithdrawInstruction(input: {
       { pubkey: ownerToken, isSigner: false, isWritable: true },
       { pubkey: input.mint, isSigner: false, isWritable: false },
       { pubkey: assetAccount, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: tokenProgram, isSigner: false, isWritable: false },
       { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     data: encodeWithdrawAsset(input.amount),
   })
+
+  // A mint can route its transfers through a hook program, and the hook's own
+  // accounts have to travel with the instruction for the transfer to go through.
+  const hook = getTransferHook(unpackMint(input.mint, mintAccount, tokenProgram))
+  if (hook && !hook.programId.equals(PublicKey.default)) {
+    await addExtraAccountMetasForExecute(
+      input.connection,
+      instruction,
+      hook.programId,
+      strategyVault,
+      input.mint,
+      ownerToken,
+      vaultAuthority,
+      input.amount
+    )
+  }
+
+  return instruction
 }
 
 export function buildCloseInstruction(input: {
@@ -216,7 +255,8 @@ export async function withdrawSolanaAsset(input: {
     payer: input.owner.publicKey,
     signers: [input.owner],
     instructions: [
-      buildWithdrawInstruction({
+      await buildWithdrawInstruction({
+        connection: input.connection,
         programId: input.programId,
         owner: input.owner.publicKey,
         strategyId: input.strategyId,

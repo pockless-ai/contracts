@@ -7,14 +7,17 @@ use solana_program::{
     msg,
     program::{invoke, invoke_signed},
     program_error::ProgramError,
-    program_pack::Pack,
     pubkey::Pubkey,
     rent::Rent,
     system_instruction, system_program,
     sysvar::Sysvar,
 };
-use spl_token::{
-    instruction as token_instruction,
+// Token-2022's builders accept either program id and its state types read a
+// legacy account as a base with no extensions, so one set of calls serves both
+// programs. `spl_token` stays for the well-known ids.
+use spl_token_2022::{
+    extension::StateWithExtensions,
+    instruction as token_instruction, onchain as token_onchain,
     state::{Account as TokenAccount, Mint},
 };
 
@@ -574,6 +577,7 @@ fn execute_swap_with_fees_impl(
     let token_mint = next_account_info(account_iter)?;
     let usdc_mint = next_account_info(account_iter)?;
     let token_program = next_account_info(account_iter)?;
+    let asset_token_program = next_account_info(account_iter)?;
     let associated_token_program = next_account_info(account_iter)?;
     let system_program_account = next_account_info(account_iter)?;
     let program_authority = next_account_info(account_iter)?;
@@ -596,6 +600,7 @@ fn execute_swap_with_fees_impl(
 
     assert_system_program(system_program_account)?;
     assert_token_program(token_program, &wallet_config)?;
+    assert_mint_token_program(token_mint, asset_token_program)?;
     assert_associated_token_program(associated_token_program, &wallet_config)?;
     if usdc_mint.key != &wallet_config.usdc_mint {
         return Err(StrategySpendError::MintMismatch.into());
@@ -635,7 +640,7 @@ fn execute_swap_with_fees_impl(
         strategy_token_vault,
         vault_authority,
         token_mint,
-        token_program,
+        asset_token_program,
         associated_token_program,
         system_program_account,
     )?;
@@ -649,7 +654,7 @@ fn execute_swap_with_fees_impl(
         strategy_token_vault,
         vault_authority.key,
         token_mint.key,
-        token_program.key,
+        asset_token_program.key,
     )?;
 
     let (expected_asset, asset_bump) = Pubkey::find_program_address(
@@ -670,14 +675,16 @@ fn execute_swap_with_fees_impl(
         asset_bump,
     )?;
 
-    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
+    let owner_usdc_expected =
+        associated_token_address(owner.key, &wallet_config.usdc_mint, &spl_token::id());
     if owner_usdc.key != &owner_usdc_expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
     assert_usdc_account(owner_usdc, owner.key, &wallet_config.usdc_mint)?;
 
     if platform_fee_usdc > 0 {
-        let treasury_usdc_expected = associated_token_address(&treasury, &wallet_config.usdc_mint);
+        let treasury_usdc_expected =
+            associated_token_address(&treasury, &wallet_config.usdc_mint, &spl_token::id());
         if treasury_usdc.key != &treasury_usdc_expected {
             return Err(StrategySpendError::InvalidAccount.into());
         }
@@ -980,8 +987,11 @@ fn reimburse_gas<'a>(
         .collect();
     let gas_atomic = scale_to_mint_atomic(gas_reimburse_usdc, usdc_mint)?;
     let strategy_usdc_before = token_account_amount(strategy_usdc)?;
-    let expected_gas_wsol =
-        associated_token_address(vault_authority.key, &spl_token::native_mint::id());
+    let expected_gas_wsol = associated_token_address(
+        vault_authority.key,
+        &spl_token::native_mint::id(),
+        &spl_token::id(),
+    );
     if gas_wsol.key != &expected_gas_wsol || !gas_wsol.is_writable {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -1971,7 +1981,8 @@ fn execute_relay_deposit(
         token_program.key,
     )?;
 
-    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
+    let owner_usdc_expected =
+        associated_token_address(owner.key, &wallet_config.usdc_mint, &spl_token::id());
     if owner_usdc.key != &owner_usdc_expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -2043,19 +2054,19 @@ fn execute_relay_deposit(
         pending_bump,
     )?;
 
-    if platform_fee_usdc > 0 {
-        let fee_atomic = scale_to_mint_atomic(platform_fee_usdc, usdc_mint)?;
-        transfer_from_vault(
-            token_program,
-            strategy_usdc,
-            usdc_mint,
-            treasury_usdc,
-            vault_authority,
-            strategy,
-            vault_bump,
-            fee_atomic,
-        )?;
-    }
+    // The fee cannot be skimmed off the vault: `deposit_token` pulls the whole
+    // deposit out of it, so anything taken first leaves the CPI short of what
+    // Relay quoted. The owner funds it, exactly as the swap path does.
+    charge_platform_fee(
+        token_program,
+        owner_usdc,
+        usdc_mint,
+        treasury_usdc,
+        program_authority,
+        owner,
+        authority_bump,
+        platform_fee_usdc,
+    )?;
 
     let remaining_accounts = account_iter.cloned().collect::<Vec<_>>();
     // `deposit_token` spends the vault USDC account with the vault as sender
@@ -2156,7 +2167,7 @@ fn credit_relay_asset(
     assert_relay_intent(&strategy_state, nonce, deadline)?;
 
     assert_system_program(system_program_account)?;
-    assert_token_program(token_program, &wallet_config)?;
+    assert_mint_token_program(token_mint, token_program)?;
 
     let (expected_vault_authority, vault_bump) =
         Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
@@ -2306,7 +2317,7 @@ fn execute_remote_relay_sell(
     }
     assert_relay_intent(&strategy_state, nonce, deadline)?;
     assert_system_program(system_program_account)?;
-    assert_token_program(token_program, &wallet_config)?;
+    assert_mint_token_program(token_mint, token_program)?;
     if jupiter_program.key != &wallet_config.jupiter_program {
         return Err(StrategySpendError::ProgramMismatch.into());
     }
@@ -2533,7 +2544,8 @@ fn credit_usdc_return(
         token_program.key,
     )?;
 
-    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
+    let owner_usdc_expected =
+        associated_token_address(owner.key, &wallet_config.usdc_mint, &spl_token::id());
     if owner_usdc.key != &owner_usdc_expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -2697,7 +2709,8 @@ fn release_relay_deposit(
         token_program.key,
     )?;
 
-    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
+    let owner_usdc_expected =
+        associated_token_address(owner.key, &wallet_config.usdc_mint, &spl_token::id());
     if owner_usdc.key != &owner_usdc_expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -2817,7 +2830,8 @@ fn execute_relay_gas_top_up(
         system_program_account,
     )?;
 
-    let owner_usdc_expected = associated_token_address(owner.key, &wallet_config.usdc_mint);
+    let owner_usdc_expected =
+        associated_token_address(owner.key, &wallet_config.usdc_mint, &spl_token::id());
     if owner_usdc.key != &owner_usdc_expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -3158,7 +3172,7 @@ fn withdraw_asset(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) ->
         return Err(StrategySpendError::OwnerMismatch.into());
     }
 
-    assert_token_program(token_program, &wallet_config)?;
+    assert_mint_token_program(token_mint, token_program)?;
     assert_associated_token_program(associated_token_program, &wallet_config)?;
     assert_system_program(system_program_account)?;
 
@@ -3175,7 +3189,8 @@ fn withdraw_asset(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) ->
         token_program.key,
     )?;
 
-    let owner_token_expected = associated_token_address(owner.key, token_mint.key);
+    let owner_token_expected =
+        associated_token_address(owner.key, token_mint.key, token_program.key);
     if owner_token.key != &owner_token_expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -3195,24 +3210,21 @@ fn withdraw_asset(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) ->
 
     let cost_removed = pro_rata_cost(asset.cost_usdc, asset.quantity, amount)?;
 
-    invoke_signed(
-        &token_instruction::transfer_checked(
-            token_program.key,
-            strategy_vault.key,
-            token_mint.key,
-            owner_token.key,
-            vault_authority.key,
-            &[],
-            amount,
-            mint_decimals(token_mint)?,
-        )?,
-        &[
-            strategy_vault.clone(),
-            token_mint.clone(),
-            owner_token.clone(),
-            vault_authority.clone(),
-            token_program.clone(),
-        ],
+    // A Token-2022 mint can name a transfer hook, and the hook's own accounts
+    // have to ride along or the transfer fails. They follow the fixed accounts,
+    // and the helper resolves which of them the hook asked for. A transfer fee,
+    // if the mint charges one, is taken out of what the owner receives: the
+    // vault gives up `amount` either way, which is what the position records.
+    let hook_accounts = account_iter.cloned().collect::<Vec<_>>();
+    token_onchain::invoke_transfer_checked(
+        token_program.key,
+        strategy_vault.clone(),
+        token_mint.clone(),
+        owner_token.clone(),
+        vault_authority.clone(),
+        &hook_accounts,
+        amount,
+        mint_decimals(token_mint)?,
         &[&[VAULT_SEED, strategy.key.as_ref(), &[vault_bump]]],
     )?;
 
@@ -3318,9 +3330,11 @@ fn cpi_jupiter<'account>(
     Ok(())
 }
 
-fn associated_token_address(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
+/// The token program is part of the ATA seeds, so a Token-2022 mint resolves to
+/// a different address than the same mint would under SPL Token.
+fn associated_token_address(wallet: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(
-        &[wallet.as_ref(), spl_token::id().as_ref(), mint.as_ref()],
+        &[wallet.as_ref(), token_program.as_ref(), mint.as_ref()],
         &ASSOCIATED_TOKEN_PROGRAM_ID,
     )
     .0
@@ -3363,7 +3377,7 @@ fn ensure_vault_ata<'a>(
     associated_token_program: &AccountInfo<'a>,
     system_program_account: &AccountInfo<'a>,
 ) -> ProgramResult {
-    let expected = associated_token_address(vault_authority.key, mint.key);
+    let expected = associated_token_address(vault_authority.key, mint.key, token_program.key);
     if vault.key != &expected {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -3536,8 +3550,7 @@ fn assert_strategy_vault(
     if vault.owner != token_program {
         return Err(StrategySpendError::InvalidAccount.into());
     }
-    let data = TokenAccount::unpack(&vault.data.borrow())
-        .map_err(|_| StrategySpendError::InvalidAccount)?;
+    let data = unpack_token_account(vault)?;
     if data.owner != *vault_authority || data.mint != *mint {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -3555,8 +3568,7 @@ fn assert_native_vault(
         &spl_token::native_mint::id(),
         token_program,
     )?;
-    let data = TokenAccount::unpack(&vault.data.borrow())
-        .map_err(|_| StrategySpendError::InvalidAccount)?;
+    let data = unpack_token_account(vault)?;
     if data.is_native.is_none() {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -3564,8 +3576,7 @@ fn assert_native_vault(
 }
 
 fn assert_usdc_account(account: &AccountInfo, owner: &Pubkey, usdc_mint: &Pubkey) -> ProgramResult {
-    let data = TokenAccount::unpack(&account.data.borrow())
-        .map_err(|_| StrategySpendError::InvalidAccount)?;
+    let data = unpack_token_account(account)?;
     if data.owner != *owner || data.mint != *usdc_mint {
         return Err(StrategySpendError::InvalidAccount.into());
     }
@@ -3586,6 +3597,26 @@ fn assert_token_program(token_program: &AccountInfo, wallet: &WalletConfig) -> P
     Ok(())
 }
 
+/// A mint is only movable by the program that owns it, and a wallet holds SPL
+/// Token and Token-2022 positions side by side, so the asset's program comes
+/// from the mint rather than from the wallet config.
+fn assert_mint_token_program(mint: &AccountInfo, token_program: &AccountInfo) -> ProgramResult {
+    if token_program.key != &spl_token::id() && token_program.key != &spl_token_2022::id() {
+        return Err(StrategySpendError::ProgramMismatch.into());
+    }
+    if mint.owner != token_program.key {
+        return Err(StrategySpendError::ProgramMismatch.into());
+    }
+    Ok(())
+}
+
+fn unpack_token_account(account: &AccountInfo) -> Result<TokenAccount, ProgramError> {
+    let data = account.data.borrow();
+    let state = StateWithExtensions::<TokenAccount>::unpack(&data)
+        .map_err(|_| StrategySpendError::InvalidAccount)?;
+    Ok(state.base)
+}
+
 fn assert_associated_token_program(
     associated_token_program: &AccountInfo,
     wallet: &WalletConfig,
@@ -3597,19 +3628,19 @@ fn assert_associated_token_program(
 }
 
 fn mint_decimals(mint: &AccountInfo) -> Result<u8, ProgramError> {
-    let data = Mint::unpack(&mint.data.borrow()).map_err(|_| StrategySpendError::MintMismatch)?;
-    Ok(data.decimals)
+    let data = mint.data.borrow();
+    let state =
+        StateWithExtensions::<Mint>::unpack(&data).map_err(|_| StrategySpendError::MintMismatch)?;
+    Ok(state.base.decimals)
 }
 
 fn token_account_amount(account: &AccountInfo) -> Result<u64, ProgramError> {
-    let data = TokenAccount::unpack(&account.data.borrow())
-        .map_err(|_| StrategySpendError::InvalidAccount)?;
+    let data = unpack_token_account(account)?;
     Ok(data.amount)
 }
 
 fn native_token_amount(account: &AccountInfo) -> Result<u64, ProgramError> {
-    let data = TokenAccount::unpack(&account.data.borrow())
-        .map_err(|_| StrategySpendError::InvalidAccount)?;
+    let data = unpack_token_account(account)?;
     if data.mint != spl_token::native_mint::id() || data.is_native.is_none() {
         return Err(StrategySpendError::InvalidAccount.into());
     }

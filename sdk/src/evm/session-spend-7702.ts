@@ -428,6 +428,16 @@ export const sessionSpend7702Abi = [
   },
   {
     type: "function",
+    name: "vaultAccountedBalanceOf",
+    stateMutability: "view",
+    inputs: [
+      { name: "strategyId", type: "bytes32" },
+      { name: "token", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "pendingSellOf",
     stateMutability: "view",
     inputs: [{ name: "relayOrderId", type: "bytes32" }],

@@ -79,7 +79,8 @@ export function SolanaPanel() {
         payer: wallet.publicKey,
         signTransaction: wallet.signTransaction.bind(wallet),
         instructions: [
-          buildWithdrawInstruction({
+          await buildWithdrawInstruction({
+            connection,
             programId,
             owner: wallet.publicKey,
             strategyId,

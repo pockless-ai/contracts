@@ -16,7 +16,7 @@ use solana_sdk::{
     transaction::Transaction,
 };
 use spl_associated_token_account::get_associated_token_address;
-use spl_token::{
+use spl_token_2022::{
     instruction as token_instruction,
     state::{Account as TokenAccount, AccountState, Mint},
 };
@@ -58,6 +58,15 @@ fn strategy_pda(
 }
 
 fn mint_account(decimals: u8, authority: Pubkey, supply: u64) -> Account {
+    mint_account_owned_by(decimals, authority, supply, spl_token::id())
+}
+
+fn mint_account_owned_by(
+    decimals: u8,
+    authority: Pubkey,
+    supply: u64,
+    token_program: Pubkey,
+) -> Account {
     let mint = Mint {
         mint_authority: COption::Some(authority),
         supply,
@@ -70,7 +79,7 @@ fn mint_account(decimals: u8, authority: Pubkey, supply: u64) -> Account {
     Account {
         lamports: 1_000_000_000,
         data,
-        owner: spl_token::id(),
+        owner: token_program,
         executable: false,
         rent_epoch: 0,
     }
@@ -185,6 +194,12 @@ fn mock_token_swap(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
     let token_program = next_account_info(accounts)?;
     let input_amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
     let output_amount = u64::from_le_bytes(data[8..16].try_into().unwrap());
+    // The two sides of a route can belong to different token programs, which is
+    // the case for any Token-2022 asset bought with USDC.
+    let output_token_program = accounts
+        .clone()
+        .find(|account| account.key == &spl_token_2022::id() || account.key == &spl_token::id())
+        .unwrap_or(token_program);
 
     if input_mint.key == &spl_token::native_mint::id() {
         // Wrapped SOL cannot be burned, so the sold side moves to a sink.
@@ -247,7 +262,7 @@ fn mock_token_swap(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
     } else {
         invoke(
             &token_instruction::mint_to_checked(
-                token_program.key,
+                output_token_program.key,
                 output_mint.key,
                 destination.key,
                 authority.key,
@@ -259,7 +274,7 @@ fn mock_token_swap(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
                 output_mint.clone(),
                 destination.clone(),
                 authority.clone(),
-                token_program.clone(),
+                output_token_program.clone(),
             ],
         )
     }
@@ -359,6 +374,7 @@ struct TestHarness {
     native_output_wsol: Pubkey,
     forwarder: Pubkey,
     strategy_id: [u8; 32],
+    token_2022_mint: Pubkey,
 }
 
 impl TestHarness {
@@ -382,6 +398,7 @@ impl TestHarness {
         let treasury = Keypair::new();
         let usdc_mint = Pubkey::new_unique();
         let token_mint = Pubkey::new_unique();
+        let token_2022_mint = Pubkey::new_unique();
         let gas_funder = Pubkey::find_program_address(&[GAS_FUNDER_SEED], &jupiter_program).0;
         let native_output_wsol = Pubkey::new_unique();
         let strategy_id = strategy_id("strategy-a");
@@ -412,12 +429,21 @@ impl TestHarness {
             processor!(spl_token::processor::Processor::process),
         );
         program_test.add_program(
+            "spl_token_2022",
+            spl_token_2022::id(),
+            processor!(spl_token_2022::processor::Processor::process),
+        );
+        program_test.add_program(
             "spl_associated_token_account",
             spl_associated_token_account::id(),
             processor!(spl_associated_token_account::processor::process_instruction),
         );
         program_test.add_account(usdc_mint, mint_account(6, vault_authority, LIMIT_USDC));
         program_test.add_account(token_mint, mint_account(6, vault_authority, 0));
+        program_test.add_account(
+            token_2022_mint,
+            mint_account_owned_by(6, vault_authority, 0, spl_token_2022::id()),
+        );
         program_test.add_account(
             spl_token::native_mint::id(),
             mint_account(9, vault_authority, 0),
@@ -548,6 +574,7 @@ impl TestHarness {
             native_output_wsol,
             forwarder,
             strategy_id,
+            token_2022_mint,
         };
         (harness, banks_client, payer)
     }
@@ -747,6 +774,7 @@ impl TestHarness {
             AccountMeta::new_readonly(self.token_mint, false),
             AccountMeta::new_readonly(self.usdc_mint, false),
             AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(spl_associated_token_account::id(), false),
             AccountMeta::new_readonly(system_program::id(), false),
             AccountMeta::new_readonly(program_authority, false),
@@ -802,6 +830,47 @@ impl TestHarness {
             .try_to_vec()
             .unwrap(),
         }
+    }
+
+    /// Repoints a swap at the Token-2022 asset. The vault address changes with
+    /// the token program because the program is one of the associated-token
+    /// seeds, and the asset record follows the mint.
+    fn with_token_2022_asset(&self, mut instruction: Instruction) -> Instruction {
+        let strategy = strategy_pda(&self.program_id, &self.owner.pubkey(), &self.strategy_id);
+        let vault_authority =
+            Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &self.program_id).0;
+        let legacy_vault = get_associated_token_address(&vault_authority, &self.token_mint);
+        let vault = spl_associated_token_account::get_associated_token_address_with_program_id(
+            &vault_authority,
+            &self.token_2022_mint,
+            &spl_token_2022::id(),
+        );
+        let legacy_asset = Pubkey::find_program_address(
+            &[ASSET_SEED, strategy.as_ref(), self.token_mint.as_ref()],
+            &self.program_id,
+        )
+        .0;
+        let asset = Pubkey::find_program_address(
+            &[ASSET_SEED, strategy.as_ref(), self.token_2022_mint.as_ref()],
+            &self.program_id,
+        )
+        .0;
+        for meta in instruction.accounts.iter_mut() {
+            if meta.pubkey == legacy_vault {
+                meta.pubkey = vault;
+            } else if meta.pubkey == self.token_mint {
+                meta.pubkey = self.token_2022_mint;
+            } else if meta.pubkey == legacy_asset {
+                meta.pubkey = asset;
+            }
+        }
+        instruction.accounts[14].pubkey = spl_token_2022::id();
+        // The route sells USDC under SPL Token and mints the bought side under
+        // Token-2022, so it needs both programs.
+        instruction
+            .accounts
+            .push(AccountMeta::new_readonly(spl_token_2022::id(), false));
+        instruction
     }
 
     fn execute_swap_with_fees_v2_separate_ix(
@@ -895,6 +964,7 @@ impl TestHarness {
                 AccountMeta::new_readonly(spl_token::native_mint::id(), false),
                 AccountMeta::new_readonly(self.usdc_mint, false),
                 AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_token::id(), false),
                 AccountMeta::new_readonly(spl_associated_token_account::id(), false),
                 AccountMeta::new_readonly(system_program::id(), false),
                 AccountMeta::new_readonly(program_authority, false),
@@ -982,6 +1052,7 @@ impl TestHarness {
                 AccountMeta::new(asset, false),
                 AccountMeta::new_readonly(spl_token::native_mint::id(), false),
                 AccountMeta::new_readonly(self.usdc_mint, false),
+                AccountMeta::new_readonly(spl_token::id(), false),
                 AccountMeta::new_readonly(spl_token::id(), false),
                 AccountMeta::new_readonly(spl_associated_token_account::id(), false),
                 AccountMeta::new_readonly(system_program::id(), false),
@@ -1173,7 +1244,9 @@ impl TestHarness {
         let strategy_usdc = get_associated_token_address(&vault_authority, &self.usdc_mint);
         let relay_depository_vault =
             Pubkey::find_program_address(&[VAULT_SEED], &self.relay_depository).0;
-        let deposit_amount = amount - platform_fee_usdc;
+        // Relay quotes the deposit for the full origin amount; the platform fee
+        // rides on top and never comes out of what the depository pulls.
+        let deposit_amount = amount;
         let mut relay_ix_data = vec![0u8; 8];
         relay_ix_data.extend_from_slice(&deposit_amount.to_le_bytes());
         relay_ix_data.extend_from_slice(relay_order_id.as_ref());
@@ -1812,6 +1885,90 @@ async fn execute_swap_with_fees_buy_charges_treasury_and_reduces_capacity() {
     assert_eq!(treasury_token.amount, 1_000_000);
 }
 
+/// A Token-2022 asset reaches a different vault address than the same mint
+/// would under SPL Token, the vault the associated-token program creates for it
+/// carries an extension, and only its own program can mint into it. USDC stays
+/// on SPL Token throughout, so one swap spans both programs.
+#[tokio::test]
+async fn execute_swap_with_fees_buys_a_token_2022_asset() {
+    let (h, mut banks_client, payer) = TestHarness::start().await;
+    bootstrap(&h, &mut banks_client, &payer).await;
+    let strategy = strategy_pda(&h.program_id, &h.owner.pubkey(), &h.strategy_id);
+    let vault_authority =
+        Pubkey::find_program_address(&[VAULT_SEED, strategy.as_ref()], &h.program_id).0;
+    let vault = spl_associated_token_account::get_associated_token_address_with_program_id(
+        &vault_authority,
+        &h.token_2022_mint,
+        &spl_token_2022::id(),
+    );
+    assert!(banks_client.get_account(vault).await.unwrap().is_none());
+
+    let mut legacy_program = h.with_token_2022_asset(h.execute_swap_with_fees_ix(
+        true,
+        200_000_000,
+        90_000_000,
+        1_000_000,
+        GasMode::CreditOnly,
+        0,
+        0,
+        200_000_000,
+        100_000_000,
+        0,
+        0,
+    ));
+    legacy_program.accounts[14].pubkey = spl_token::id();
+    assert!(send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        legacy_program,
+    )
+    .await
+    .is_err());
+
+    send(
+        &mut banks_client,
+        &h.relayer,
+        &[&h.relayer, &h.session],
+        h.with_token_2022_asset(h.execute_swap_with_fees_ix(
+            true,
+            200_000_000,
+            90_000_000,
+            1_000_000,
+            GasMode::CreditOnly,
+            0,
+            0,
+            200_000_000,
+            100_000_000,
+            0,
+            0,
+        )),
+    )
+    .await
+    .unwrap();
+
+    let vault_account = banks_client.get_account(vault).await.unwrap().unwrap();
+    assert_eq!(vault_account.owner, spl_token_2022::id());
+    let vault_token =
+        spl_token_2022::extension::StateWithExtensions::<TokenAccount>::unpack(&vault_account.data)
+            .unwrap();
+    assert_eq!(vault_token.base.amount, 100_000_000);
+
+    let asset = Pubkey::find_program_address(
+        &[ASSET_SEED, strategy.as_ref(), h.token_2022_mint.as_ref()],
+        &h.program_id,
+    )
+    .0;
+    let asset_state = StrategyAsset::try_from_slice(
+        &banks_client.get_account(asset).await.unwrap().unwrap().data,
+    )
+    .unwrap();
+    assert_eq!(asset_state.quantity, 100_000_000);
+    assert_eq!(asset_state.cost_usdc, 200_000_000);
+    let state = h.read_strategy(&mut banks_client).await;
+    assert_eq!(state.deployed_usdc, 200_000_000);
+}
+
 #[tokio::test]
 async fn execute_swap_with_fees_rejects_gas_below_minimum_atomically() {
     let (h, mut banks_client, payer) = TestHarness::start().await;
@@ -2227,7 +2384,7 @@ async fn relay_deposit_sends_vault_usdc_through_the_depository() {
             get_associated_token_address(&relay_vault, &h.usdc_mint)
         )
         .await,
-        amount - platform_fee
+        amount
     );
     assert_eq!(
         token_balance(
@@ -2251,7 +2408,7 @@ async fn relay_deposit_sends_vault_usdc_through_the_depository() {
             get_associated_token_address(&h.owner.pubkey(), &h.usdc_mint)
         )
         .await,
-        LIMIT_USDC - amount
+        LIMIT_USDC - amount - platform_fee
     );
 }
 
@@ -2309,7 +2466,7 @@ async fn credit_usdc_return_accepts_a_remote_origin_sell() {
     assert_eq!(token_balance(&mut banks_client, vault_usdc).await, 0);
     assert_eq!(
         token_balance(&mut banks_client, owner_usdc).await,
-        LIMIT_USDC - 25_000_000 - 26_000_000 + 26_000_000 - 260_000
+        LIMIT_USDC - 25_000_000 - 250_000 - 26_000_000 + 26_000_000 - 260_000
     );
     assert_eq!(
         token_balance(
