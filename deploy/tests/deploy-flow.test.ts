@@ -7,6 +7,7 @@ import {
   evmDeployArgs,
   redactArgs,
   solanaDeployArgs,
+  solanaExtendArgs,
   type RunCommand,
 } from "../src/command"
 import { loadDeployEnv, resolveSolanaKeypairs } from "../src/env"
@@ -269,6 +270,19 @@ test("command construction never uses raw keys and redacts signer paths", () => 
   })
   const redacted = redactArgs(solana).join(" ")
   assert.equal(redacted.includes("/secret/"), false)
+  const extend = solanaExtendArgs({
+    programId: "HDTbJM8xLj9LbWGxG7BqZqtACoKmwVmXvFLpCQBgLztU",
+    additionalBytes: 59_744,
+    rpc: "https://rpc.example",
+    feePayer: "/secret/payer.json",
+  })
+  assert.deepEqual(extend.slice(0, 4), [
+    "program",
+    "extend",
+    "HDTbJM8xLj9LbWGxG7BqZqtACoKmwVmXvFLpCQBgLztU",
+    "59744",
+  ])
+  assert.equal(redactArgs(extend).join(" ").includes("/secret/"), false)
 })
 
 test("deployment merge preserves environments and adds release metadata", async () => {

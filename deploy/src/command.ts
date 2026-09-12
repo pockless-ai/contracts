@@ -199,6 +199,28 @@ export function evmDeployArgs(input: {
   ]
 }
 
+/**
+ * Growing the program account is permissionless — the loader only asks who pays
+ * the added rent — so this signs with the fee payer rather than the authority.
+ */
+export function solanaExtendArgs(input: {
+  programId: string
+  additionalBytes: number
+  rpc: string
+  feePayer: string
+}) {
+  return [
+    "program",
+    "extend",
+    input.programId,
+    String(input.additionalBytes),
+    "--url",
+    input.rpc,
+    "--keypair",
+    input.feePayer,
+  ]
+}
+
 export function solanaDeployArgs(input: {
   artifact: string
   rpc: string

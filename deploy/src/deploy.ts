@@ -21,12 +21,14 @@ import {
   type Address,
   type Hex,
 } from "viem"
+import { PublicKey } from "@solana/web3.js"
 import {
   checked,
   evmDeployArgs,
   readHiddenInput,
   runCommand,
   solanaDeployArgs,
+  solanaExtendArgs,
   type RunCommand,
 } from "./command"
 import {
@@ -64,6 +66,15 @@ const deploymentsPath = join(contractsRoot, "docs/deployments.json")
 const solanaArtifact = join(solanaRoot, "target/deploy/strategy_spend.so")
 // UpgradeableLoaderState::ProgramData: enum tag + slot + authority option/pubkey.
 const upgradeableLoaderProgramDataMetadataBytes = 45
+const upgradeableLoader = new PublicKey(
+  "BPFLoaderUpgradeab1e11111111111111111111111"
+)
+/**
+ * The loader cannot write a program past the space it was deployed with, and the
+ * rent for extra space is never refunded, so an upgrade that outgrew its account
+ * asks for the shortfall plus a little room rather than a generous cushion.
+ */
+const solanaProgramDataMarginBytes = 12_288
 const abi = parseAbi(["constructor(address usdcToken_)"])
 let derivedFoundryAccount:
   | { account: string; address: Address; password: string }
@@ -346,6 +357,31 @@ function solanaExecutableHash(bytes: Uint8Array) {
   let end = bytes.length
   while (end > 0 && bytes[end - 1] === 0) end -= 1
   return createHash("sha256").update(bytes.subarray(0, end)).digest("hex")
+}
+
+/**
+ * How many program bytes the deployed account can hold, or `null` when the
+ * program does not exist yet and the deploy will size the account itself.
+ */
+async function solanaProgramDataCapacity(rpc: string, programId: string) {
+  const [programData] = PublicKey.findProgramAddressSync(
+    [new PublicKey(programId).toBuffer()],
+    upgradeableLoader
+  )
+  const account = await solanaRpc<{ value: { space: number } | null }>(
+    rpc,
+    "getAccountInfo",
+    [
+      programData.toBase58(),
+      {
+        encoding: "base64",
+        dataSlice: { offset: 0, length: 0 },
+        commitment: "confirmed",
+      },
+    ]
+  )
+  if (!account.value) return null
+  return account.value.space - upgradeableLoaderProgramDataMetadataBytes
 }
 
 async function solanaProgramHash(
@@ -813,6 +849,12 @@ async function preflightSolana(
       50_000_000
     )
   )
+  const artifactBytes = (await stat(solanaArtifact)).size
+  const capacityBytes = await solanaProgramDataCapacity(rpc, programId)
+  const extendBytes =
+    capacityBytes != null && artifactBytes > capacityBytes
+      ? artifactBytes - capacityBytes + solanaProgramDataMarginBytes
+      : 0
   let funding: FundingCheck
   if (!existing?.programId) {
     const balance = await solanaRpc<{ value: number }>(rpc, "getBalance", [
@@ -821,8 +863,7 @@ async function preflightSolana(
     ])
     const lamports = BigInt(balance.value)
     const programDataSize =
-      (await stat(solanaArtifact)).size +
-      upgradeableLoaderProgramDataMetadataBytes
+      artifactBytes + upgradeableLoaderProgramDataMetadataBytes
     const rent = BigInt(
       await solanaRpc<number>(rpc, "getMinimumBalanceForRentExemption", [
         programDataSize,
@@ -845,6 +886,39 @@ async function preflightSolana(
       required: requiredBalance,
       deficit,
     }
+  } else if (extendBytes > 0) {
+    // The upgrade has to buy the account more room before it can write the
+    // larger program, so the fee payer needs that rent on top of transaction
+    // fees — a shortfall found here beats one found mid-upgrade.
+    const [balance, currentRent, extendedRent] = await Promise.all([
+      solanaRpc<{ value: number }>(rpc, "getBalance", [
+        payerPubkey,
+        { commitment: "confirmed" },
+      ]),
+      solanaRpc<number>(rpc, "getMinimumBalanceForRentExemption", [
+        (capacityBytes ?? 0) + upgradeableLoaderProgramDataMetadataBytes,
+        { commitment: "confirmed" },
+      ]),
+      solanaRpc<number>(rpc, "getMinimumBalanceForRentExemption", [
+        (capacityBytes ?? 0) +
+          extendBytes +
+          upgradeableLoaderProgramDataMetadataBytes,
+        { commitment: "confirmed" },
+      ]),
+    ])
+    const lamports = BigInt(balance.value)
+    const rent = BigInt(extendedRent - currentRent)
+    const requiredBalance =
+      (rent * BigInt(100 + options.safetyBufferPercent)) / 100n
+    funding = {
+      status: "checked",
+      asset: "SOL",
+      decimals: 9,
+      balance: lamports,
+      estimated: rent,
+      required: requiredBalance,
+      deficit: lamports >= requiredBalance ? 0n : requiredBalance - lamports,
+    }
   } else {
     funding = {
       status: "skipped",
@@ -860,6 +934,7 @@ async function preflightSolana(
     programId,
     artifactHash: await sha256(solanaArtifact),
     programHash: solanaExecutableHash(await readFile(solanaArtifact)),
+    extendBytes,
     funding,
   }
 }
@@ -1215,6 +1290,21 @@ async function deploySolana(
       signature: existing.deploySignature,
     }
   } else {
+    if (preflight.extendBytes > 0) {
+      log(
+        `${target.name}: program data holds less than this release needs; extending it by ${preflight.extendBytes} bytes`
+      )
+      await checked(
+        run,
+        "solana",
+        solanaExtendArgs({
+          programId: preflight.programId,
+          additionalBytes: preflight.extendBytes,
+          rpc: preflight.rpc,
+          feePayer: preflight.feePayer,
+        })
+      )
+    }
     const result = await checked(
       run,
       "solana",
