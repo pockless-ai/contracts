@@ -1578,7 +1578,7 @@ abstract contract SessionSpendBase {
             bytes memory targetCalldata
         ) = abi.decode(_routerArgs(routerCalldata), (address, address, uint256, address, bytes));
         if (
-            calldataSellToken != _routerToken(sellToken) || calldataSellAmount != maxSellAmount
+            !_routerTokenMatches(sellToken, calldataSellToken) || calldataSellAmount != maxSellAmount
                 || operator == address(0) || target == address(0) || operator != target
         ) revert RouterFieldsMismatch();
         if (targetCalldata.length < 4) revert RouterFieldsMismatch();
@@ -1668,8 +1668,18 @@ abstract contract SessionSpendBase {
         return _executeRouterSwap(sellToken, buyToken, maxSellAmount, routerCalldata);
     }
 
-    function _routerToken(address intentToken) internal pure returns (address) {
-        return intentToken == address(0) ? ZEROX_NATIVE_TOKEN : intentToken;
+    /// @dev A native sell has no allowance for AllowanceHolder to hold, so 0x leaves the token
+    ///      slot empty even though the settler actions name the ETH sentinel. The forwarded value
+    ///      and the balance delta both bind the spend, so either shape is safe here.
+    function _routerTokenMatches(address intentToken, address calldataToken)
+        internal
+        pure
+        returns (bool)
+    {
+        if (intentToken == address(0)) {
+            return calldataToken == address(0) || calldataToken == ZEROX_NATIVE_TOKEN;
+        }
+        return calldataToken == intentToken;
     }
 
     function _routerArgs(bytes memory routerCalldata) internal pure returns (bytes memory) {

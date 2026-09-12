@@ -62,11 +62,12 @@ contract MockAllowanceHolder {
         returns (bytes memory)
     {
         (, address buyToken) = abi.decode(data, (bytes4, address));
-        address rateToken = token == NATIVE_SENTINEL ? address(0) : token;
+        bool nativeSell = token == address(0) || token == NATIVE_SENTINEL;
+        address rateToken = nativeSell ? address(0) : token;
         uint256 numerator = rateNumerator[rateToken][buyToken];
         require(numerator > 0, "rate");
         observedCallValue = msg.value;
-        if (token == NATIVE_SENTINEL) {
+        if (nativeSell) {
             require(msg.value == amount, "native value");
         } else {
             require(msg.value == 0, "unexpected value");
@@ -136,6 +137,7 @@ contract SessionSpend7702Test is Test {
         _setRate(address(usdc), address(weth), 1e27);
         _setRate(address(weth), address(usdc), 1e9);
         _setRate(address(usdc), address(0), NATIVE_RATE);
+        _setRate(address(0), address(usdc), 1e9);
 
         SessionSpend7702 implementation = new SessionSpend7702(address(usdc));
         address delegatedEoa = vm.addr(0x7702);
@@ -220,6 +222,26 @@ contract SessionSpend7702Test is Test {
         uint256 before = gasRecipient.balance;
         _swapBundleV2(intent, gasRecipient);
         assertGt(gasRecipient.balance, before);
+    }
+
+    function testV2SellsNativeInventoryBackToUsdc() public {
+        SessionSpendBase.SwapBundleIntentV2 memory buy = _buyBundleIntentV2(
+            100_000_000, 0.09 ether, 0, SessionSpendBase.GasFundingMode.CREDIT_ONLY, 0, 0
+        );
+        buy.buyToken = address(0);
+        _swapBundleV2(buy, address(this));
+
+        uint256 quantity = address(wallet).balance;
+        SessionSpendBase.SwapBundleIntentV2 memory sell = _buyBundleIntentV2(
+            quantity, 1, 0, SessionSpendBase.GasFundingMode.CREDIT_ONLY, 0, 0
+        );
+        sell.sellToken = address(0);
+        sell.buyToken = address(usdc);
+        uint256 usdcBefore = usdc.balanceOf(address(wallet));
+        _swapBundleV2(sell, address(this));
+
+        assertEq(address(wallet).balance, 0);
+        assertGt(usdc.balanceOf(address(wallet)), usdcBefore);
     }
 
     function testV2UsesDomainVersionOne() public {
@@ -745,10 +767,11 @@ contract SessionSpend7702Test is Test {
         pure
         returns (bytes memory)
     {
+        // 0x leaves the token slot empty for a native sell: there is no allowance to hold.
         return abi.encodeWithSelector(
             0x2213bc0b,
             address(0x1111),
-            sellToken == address(0) ? NATIVE_SENTINEL : sellToken,
+            sellToken,
             amount,
             address(0x1111),
             abi.encode(bytes4(0x12345678), buyToken)
