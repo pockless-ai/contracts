@@ -1327,9 +1327,7 @@ abstract contract SessionSpendBase {
             // the deposit. Funding only the deposit would settle the fee from
             // whatever else the vault holds, which is where a delivered sell
             // return waits for its credit.
-            _fundVaultFromWallet(
-                vault, usdcToken, intent.originAmount + intent.platformFeeUsdc
-            );
+            _fundVaultFromWallet(vault, usdcToken, intent.originAmount + intent.platformFeeUsdc);
             _asVault(vault).transferToken(usdcToken, intent.feeRecipient, intent.platformFeeUsdc);
             emit PlatformFeeCharged(
                 intent.strategyId, intent.sessionKey, intent.feeRecipient, intent.platformFeeUsdc
