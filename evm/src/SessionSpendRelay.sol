@@ -176,7 +176,7 @@ contract SessionSpendRelay is SessionSpendBase {
             revert InvalidIntent();
         }
 
-        _requireStrategyVault($, intent.strategyId);
+        address vault = _requireStrategyVault($, intent.strategyId);
         uint256 surplus = _vaultSurplus($, intent.strategyId, intent.token);
         if (intent.refundQuantity > surplus) revert InsufficientVaultSurplus();
 
@@ -185,6 +185,9 @@ contract SessionSpendRelay is SessionSpendBase {
             uint256 costReleased = _normalizeUsdc(uint256(intent.refundCostUsdc));
             if (costReleased == 0 || costReleased > session.deployedUsdc) revert InvalidIntent();
             session.deployedUsdc = uint128(uint256(session.deployedUsdc) - costReleased);
+            // The deposit came out of the wallet, so a refund goes back there
+            // instead of sitting in the vault as surplus.
+            _asVault(vault).transferToken(usdcToken, address(this), intent.refundQuantity);
         }
 
         delete $.pendingDeposits[intent.relayOrderId];

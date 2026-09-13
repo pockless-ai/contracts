@@ -3065,7 +3065,7 @@ fn restore_remote_relay_asset(
     }
     assert_relay_intent(&strategy_state, nonce, deadline)?;
     assert_system_program(system_program_account)?;
-    assert_token_program(token_program, &wallet_config)?;
+    assert_mint_token_program(token_mint, token_program)?;
 
     let (expected_vault_authority, _) =
         Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);

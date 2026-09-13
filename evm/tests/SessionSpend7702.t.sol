@@ -505,6 +505,7 @@ contract SessionSpend7702Test is Test {
 
         address vault = wallet.strategyVaultOf(STRATEGY_A);
         usdc.mint(vault, 150_000_000);
+        uint256 ownerBefore = usdc.balanceOf(address(wallet));
 
         SessionSpendBase.ReleaseRelayDepositIntent memory intent =
             SessionSpendBase.ReleaseRelayDepositIntent({
@@ -525,6 +526,8 @@ contract SessionSpend7702Test is Test {
         SessionSpendBase.Session memory session = wallet.sessionOf(STRATEGY_A, sessionKey);
         assertEq(session.deployedUsdc, 0);
         assertFalse(wallet.pendingDepositOf(RELAY_ORDER_A).exists);
+        assertEq(usdc.balanceOf(vault), 0);
+        assertEq(usdc.balanceOf(address(wallet)), ownerBefore + 150_000_000);
     }
 
     function testRestoreRemoteRelayAssetRestoresInventory() public {
