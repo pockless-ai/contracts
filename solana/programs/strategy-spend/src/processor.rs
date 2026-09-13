@@ -1566,6 +1566,7 @@ fn bump_nonce(strategy_state: &mut StrategyAccount) -> Result<(), ProgramError> 
     Ok(())
 }
 
+#[inline(never)]
 fn consume_relay_receipt<'a>(
     receipt: &AccountInfo<'a>,
     strategy: &AccountInfo<'a>,
@@ -2531,9 +2532,13 @@ fn credit_usdc_return(
         return Err(StrategySpendError::MintMismatch.into());
     }
 
-    let (expected_vault_authority, vault_bump) =
-        Pubkey::find_program_address(&[VAULT_SEED, strategy.key.as_ref()], program_id);
-    if vault_authority.key != &expected_vault_authority || strategy_state.vault_bump != vault_bump {
+    let vault_bump = strategy_state.vault_bump;
+    let expected_vault_authority = Pubkey::create_program_address(
+        &[VAULT_SEED, strategy.key.as_ref(), &[vault_bump]],
+        program_id,
+    )
+    .map_err(|_| StrategySpendError::InvalidAccount)?;
+    if vault_authority.key != &expected_vault_authority {
         return Err(StrategySpendError::InvalidAccount.into());
     }
 
@@ -2543,12 +2548,6 @@ fn credit_usdc_return(
         usdc_mint.key,
         token_program.key,
     )?;
-
-    let owner_usdc_expected =
-        associated_token_address(owner.key, &wallet_config.usdc_mint, &spl_token::id());
-    if owner_usdc.key != &owner_usdc_expected {
-        return Err(StrategySpendError::InvalidAccount.into());
-    }
     assert_usdc_account(owner_usdc, owner.key, &wallet_config.usdc_mint)?;
 
     if cost_released_usdc > strategy_state.deployed_usdc {

@@ -49,6 +49,12 @@ pub enum StrategySpendError {
     RelayCpiFailed,
     #[error("Relay pending record missing")]
     PendingRecordMissing,
+    #[error("Released swap is not settled in this transaction")]
+    SwapNotSettled,
+    #[error("Swap returned less than the strategy is owed")]
+    SwapOutputShort,
+    #[error("Released swap input was not accounted for")]
+    SwapInputUnaccounted,
 }
 
 impl From<StrategySpendError> for ProgramError {
