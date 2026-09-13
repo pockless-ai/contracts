@@ -6,12 +6,12 @@
       "chainId": 1,
       "rpc": "https://eth.llamarpc.com",
       "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-      "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+      "implementation": "0x55786c38e1f653aFDd308C00A525dc438778e16a",
       "status": "deployed",
-      "txHash": "0x6ef03bb7234d78e06296f3fc005f5c0c6f2474539448dbc3a382d2ef4b6512b5",
-      "codeHash": "0xc3eb2404637caec683a1ab35c165545650cdaa681e6cc9f2cfbb0ed359d9e165",
-      "verifiedAt": "2026-09-13T15:18:45.431Z",
-      "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+      "txHash": "0xb657176cdbea959a0b6b0f6770637def3702a0e13db1a58dec8a3744651da3e6",
+      "codeHash": "0x722abd84cd21f6be5a3c18e091375c3e43bb4c2239b064057a4414d1a26e6569",
+      "verifiedAt": "2026-09-13T18:30:15.577Z",
+      "releaseCommit": "2e4d68b1adbb4c857fecfd172734c56059446afb",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -60,9 +60,19 @@
           "verifiedAt": "2026-09-12T18:23:10.911Z",
           "releaseCommit": "28b6b953a94324d60aa54adaa756d264d6c3df5f",
           "supersededAt": "2026-09-13T15:18:45.431Z"
+        },
+        {
+          "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+          "txHash": "0x6ef03bb7234d78e06296f3fc005f5c0c6f2474539448dbc3a382d2ef4b6512b5",
+          "codeHash": "0xc3eb2404637caec683a1ab35c165545650cdaa681e6cc9f2cfbb0ed359d9e165",
+          "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+          "verificationStatus": "verified",
+          "verifiedAt": "2026-09-13T15:18:45.431Z",
+          "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+          "supersededAt": "2026-09-13T18:30:15.577Z"
         }
       ],
-      "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+      "artifactHash": "b3de375bb7b60429712d36335f65324210218965406d4125591e3a2e36c2490a",
       "verificationStatus": "verified"
     },
     "10": {
@@ -76,7 +86,7 @@
       "txHash": "0xa0ffae07658617a9eb513ecd6cae7269d3c5a2890376cbbe533aa47a9398de95",
       "codeHash": "0x0496e386d3125b79c05f3fd5ea1027da3761a42048726a60782a87a8d64a18f1",
       "verifiedAt": "2026-09-13T17:51:37.276Z",
-      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
+      "releaseCommit": "2e4d68b1adbb4c857fecfd172734c56059446afb",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -151,7 +161,7 @@
       "txHash": "0x58df9ff9b600e68645260f3dbc2fd66367f13dc2430645124789ce49804985d7",
       "codeHash": "0x13bcb4e55705f0ec162846ab86b3d584323270f866c7d00e4cd333e2b7c6bfc4",
       "verifiedAt": "2026-09-13T17:51:33.525Z",
-      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
+      "releaseCommit": "2e4d68b1adbb4c857fecfd172734c56059446afb",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -225,7 +235,7 @@
       "status": "deployed",
       "txHash": "0x8a04e703322c7ede68139fa1890ccaac41108b96367c47a6fa5aceb05be317c2",
       "codeHash": "0x2979dba6959aa5db6779e5bad8e80ae79ab87c7faf6fe72ef04dea0643307f6d",
-      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
+      "releaseCommit": "2e4d68b1adbb4c857fecfd172734c56059446afb",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -301,7 +311,7 @@
       "txHash": "0x633aa37639410d7ea12ae9073d30d1ed6f5ee66b75493abcec35156ea436e0b8",
       "codeHash": "0x8d90e1f085105888d1e75412128517251f60a67881e0d936498d13e07e798944",
       "verifiedAt": "2026-09-13T17:51:35.477Z",
-      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
+      "releaseCommit": "2e4d68b1adbb4c857fecfd172734c56059446afb",
       "releases": [
         {
           "implementation": "0x739a8eF0A0f8aFb3909070e77D9963029C1D2508",
@@ -376,7 +386,7 @@
       "txHash": "0xec7fd1f59c70899ca823945d0a258a7b664f69e80d0cc7533ecd917796fb5bb5",
       "codeHash": "0x070f927dc336ee84c0c161540703f823fb0adb0c19dfdd6182a9126143750951",
       "verifiedAt": "2026-09-13T17:51:28.053Z",
-      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
+      "releaseCommit": "2e4d68b1adbb4c857fecfd172734c56059446afb",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -518,7 +528,7 @@
       "status": "deployed",
       "programHash": "7e45f365ae7065c9436b2a39f6ef73c8fdd1ddedd0e18428ef090d1412bfac13",
       "verifiedAt": "2026-09-13T15:24:33.138Z",
-      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
+      "releaseCommit": "2e4d68b1adbb4c857fecfd172734c56059446afb",
       "releases": [
         {
           "programId": "HDTbJM8xLj9LbWGxG7BqZqtACoKmwVmXvFLpCQBgLztU",
