@@ -281,6 +281,24 @@ contract SessionSpend7702Test is Test {
         assertEq(usdc.balanceOf(RELAY_DEPOSITORY), originAmount);
     }
 
+    function testRelayDepositLeavesUncreditedVaultBalanceAlone() public {
+        // A delivered sell return waits in the vault as surplus until its credit
+        // claims it. A later deposit and its fee must come from the wallet.
+        address vault = wallet.strategyVaultOf(STRATEGY_A);
+        uint256 delivered = 3_000_000;
+        usdc.mint(vault, delivered);
+        uint256 walletBefore = usdc.balanceOf(address(wallet));
+        uint256 fee = 500_000;
+        uint256 originAmount = 100_000_000;
+
+        _executeRelayDeposit(RELAY_ORDER_A, originAmount, fee, vault);
+
+        assertEq(usdc.balanceOf(vault), delivered);
+        assertEq(wallet.vaultAccountedBalanceOf(STRATEGY_A, address(usdc)), 0);
+        assertEq(usdc.balanceOf(address(wallet)), walletBefore - originAmount - fee);
+        assertEq(usdc.balanceOf(feeRecipient), fee);
+    }
+
     function testRelayDepositRejectsWrongRelayer() public {
         SessionSpendBase.RelayDepositIntent memory intent =
             _relayDepositIntent(RELAY_ORDER_A, 100_000_000);

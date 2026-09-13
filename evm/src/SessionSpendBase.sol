@@ -1323,20 +1323,35 @@ abstract contract SessionSpendBase {
     {
         if (intent.platformFeeUsdc > 0) {
             if (intent.feeRecipient == address(0)) revert InvalidIntent();
-            if (IERC20Extended(usdcToken).balanceOf(address(this)) < intent.originAmount) {
-                revert InsufficientInventory();
-            }
-            if (!IERC20Extended(usdcToken).transfer(vault, intent.originAmount)) {
-                revert CallFailed("");
-            }
+            // The fee is paid out of the vault, so it has to be funded alongside
+            // the deposit. Funding only the deposit would settle the fee from
+            // whatever else the vault holds, which is where a delivered sell
+            // return waits for its credit.
+            _fundVaultFromWallet(
+                vault, usdcToken, intent.originAmount + intent.platformFeeUsdc
+            );
             _asVault(vault).transferToken(usdcToken, intent.feeRecipient, intent.platformFeeUsdc);
             emit PlatformFeeCharged(
                 intent.strategyId, intent.sessionKey, intent.feeRecipient, intent.platformFeeUsdc
             );
         } else {
             if (intent.feeRecipient != address(0)) revert InvalidIntent();
-            _transferToVault(vault, usdcToken, intent.originAmount);
+            _fundVaultFromWallet(vault, usdcToken, intent.originAmount);
         }
+    }
+
+    /**
+     * Moves new money in from the wallet. `_transferToVault` covers what the
+     * vault should already hold and tops up only a deficit, which would let a
+     * deposit spend another order's undelivered balance, so anything arriving
+     * from outside the vault comes through here in full.
+     */
+    function _fundVaultFromWallet(address vault, address token, uint256 amount) internal {
+        if (amount == 0) return;
+        if (IERC20Extended(token).balanceOf(address(this)) < amount) {
+            revert InsufficientInventory();
+        }
+        if (!IERC20Extended(token).transfer(vault, amount)) revert CallFailed("");
     }
 
     function _transferToVault(address vault, address token, uint256 amount) internal {

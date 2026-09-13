@@ -282,7 +282,7 @@ contract SessionSpendRelay is SessionSpendBase {
         Session storage session = $.sessions[intent.strategyId][intent.sessionKey];
         uint256 overheadUsdc = _normalizeUsdc(intent.overheadUsdc);
         _deductOverhead(session, overheadUsdc);
-        _transferToVault(vault, usdcToken, intent.overheadUsdc);
+        _fundVaultFromWallet(vault, usdcToken, intent.overheadUsdc);
         $.pendingGasTopUps[intent.relayOrderId] = PendingGasTopUp({
             strategyId: intent.strategyId,
             overheadUsdc: uint128(overheadUsdc),
