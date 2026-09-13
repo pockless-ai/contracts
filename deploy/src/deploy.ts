@@ -66,6 +66,7 @@ const deploymentsPath = join(contractsRoot, "docs/deployments.json")
 const solanaArtifact = join(solanaRoot, "target/deploy/strategy_spend.so")
 // UpgradeableLoaderState::ProgramData: enum tag + slot + authority option/pubkey.
 const upgradeableLoaderProgramDataMetadataBytes = 45
+const solanaCallFrameBytes = 4096
 const upgradeableLoader = new PublicKey(
   "BPFLoaderUpgradeab1e11111111111111111111111"
 )
@@ -357,6 +358,102 @@ function solanaExecutableHash(bytes: Uint8Array) {
   let end = bytes.length
   while (end > 0 && bytes[end - 1] === 0) end -= 1
   return createHash("sha256").update(bytes.subarray(0, end)).digest("hex")
+}
+
+/**
+ * Reports every instruction that reaches past its own call frame, by byte
+ * offset into the section.
+ *
+ * SBF gives each call a fixed 4kB frame and the linker does not reject a
+ * function that needs more, so a program whose frame is over budget links,
+ * deploys, and then faults mid-instruction on whichever local the compiler
+ * placed outside the frame. Tests cannot see it either: they run the handlers
+ * natively, on a host stack. Reading the artifact is what is left.
+ */
+export function solanaFramesOverrun(text: Uint8Array) {
+  const overruns: number[] = []
+  // Loads and stores relative to r10 (the frame pointer), by access width.
+  const loads = new Map([
+    [0x61, 4],
+    [0x69, 2],
+    [0x71, 1],
+    [0x79, 8],
+  ])
+  const stores = new Map([
+    [0x62, 4],
+    [0x63, 4],
+    [0x6a, 2],
+    [0x6b, 2],
+    [0x72, 1],
+    [0x73, 1],
+    [0x7a, 8],
+    [0x7b, 8],
+  ])
+  for (let at = 0; at + 8 <= text.length; at += 8) {
+    const opcode = text[at]
+    // `lddw` is the one instruction that spans two slots.
+    if (opcode === 0x18) {
+      at += 8
+      continue
+    }
+    const registers = text[at + 1]
+    const source = registers >> 4
+    const destination = registers & 0xf
+    const size = stores.get(opcode) ?? loads.get(opcode)
+    if (size == null) continue
+    const frame = stores.has(opcode) ? destination : source
+    if (frame !== 10) continue
+    const offset = new DataView(
+      text.buffer,
+      text.byteOffset + at + 2,
+      2
+    ).getInt16(0, true)
+    if (offset < -solanaCallFrameBytes) overruns.push(at)
+  }
+  return overruns
+}
+
+/** Locates a section by name in an ELF64 little-endian image. */
+function elfSection(bytes: Uint8Array, name: string) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const headers = Number(view.getBigUint64(0x28, true))
+  const entrySize = view.getUint16(0x3a, true)
+  const count = view.getUint16(0x3c, true)
+  const namesIndex = view.getUint16(0x3e, true)
+  const namesOffset = Number(
+    view.getBigUint64(headers + namesIndex * entrySize + 24, true)
+  )
+  const read = (index: number) => {
+    const header = headers + index * entrySize
+    const nameAt = namesOffset + view.getUint32(header, true)
+    let end = nameAt
+    while (bytes[end] !== 0) end += 1
+    return {
+      name: Buffer.from(bytes.subarray(nameAt, end)).toString("utf8"),
+      offset: Number(view.getBigUint64(header + 24, true)),
+      size: Number(view.getBigUint64(header + 32, true)),
+    }
+  }
+  for (let index = 0; index < count; index += 1) {
+    const section = read(index)
+    if (section.name === name) {
+      return bytes.subarray(section.offset, section.offset + section.size)
+    }
+  }
+  return null
+}
+
+async function assertSolanaFramesFit(artifact: string) {
+  const text = elfSection(await readFile(artifact), ".text")
+  if (!text) {
+    throw new Error(`${artifact} has no .text section to check.`)
+  }
+  const overruns = solanaFramesOverrun(text)
+  if (overruns.length > 0) {
+    throw new Error(
+      `${overruns.length} instruction(s) in strategy_spend.so reach past their ${solanaCallFrameBytes}-byte call frame (first at .text+0x${overruns[0].toString(16)}). Give the handlers that grew #[inline(never)] so each owns a frame.`
+    )
+  }
 }
 
 /**
@@ -1531,6 +1628,9 @@ export async function runDeploy(
       )
       await access(solanaArtifact)
     }
+    await runStage(dependencies.log, "Checking Solana call frames", () =>
+      assertSolanaFramesFit(solanaArtifact)
+    )
   }
   const path =
     dependencies.manifestPath ??

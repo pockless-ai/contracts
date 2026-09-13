@@ -18,6 +18,7 @@ import {
   isExplorerVerificationPending,
   parseVerifyGuid,
   runDeploy,
+  solanaFramesOverrun,
   waitForRuntimeCode,
 } from "../src/deploy"
 import { mergeDeployments } from "../src/deployments"
@@ -283,6 +284,33 @@ test("command construction never uses raw keys and redacts signer paths", () => 
     "59744",
   ])
   assert.equal(redactArgs(extend).join(" ").includes("/secret/"), false)
+})
+
+test("the artifact check finds locals the compiler placed outside the call frame", () => {
+  const instruction = (opcode: number, registers: number, offset: number) => {
+    const bytes = Buffer.alloc(8)
+    bytes[0] = opcode
+    bytes[1] = registers
+    bytes.writeInt16LE(offset, 2)
+    return bytes
+  }
+  // r10 addresses the top of the frame, so the last valid byte is at -4096.
+  const inFrame = instruction(0x7b, 0x1a, -4096)
+  const pastFrame = instruction(0x7b, 0x1a, -4104)
+  const loadPastFrame = instruction(0x79, 0xa1, -5000)
+  // A `lddw` carries its high word in a second slot that must not be decoded.
+  const wideLoad = Buffer.concat([
+    instruction(0x18, 0x01, 0),
+    instruction(0x7b, 0x1a, -8192),
+  ])
+  assert.deepEqual(solanaFramesOverrun(inFrame), [])
+  assert.deepEqual(solanaFramesOverrun(wideLoad), [])
+  assert.deepEqual(solanaFramesOverrun(pastFrame), [0])
+  assert.deepEqual(solanaFramesOverrun(loadPastFrame), [0])
+  assert.deepEqual(
+    solanaFramesOverrun(Buffer.concat([inFrame, pastFrame, loadPastFrame])),
+    [8, 16]
+  )
 })
 
 test("deployment merge preserves environments and adds release metadata", async () => {

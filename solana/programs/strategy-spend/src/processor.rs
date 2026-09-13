@@ -42,6 +42,11 @@ const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
 pub const RELAY_FORWARDER_PROGRAM_ID: Pubkey =
     solana_program::pubkey!("DPArtTLbEqa6EuXHfL5UFLBZhFjiEXWRudhvXDrjwXUr");
 
+/// A call frame is 4kB and the handlers below are each reached from exactly one
+/// arm, so the compiler would fold all of them into this frame and size it to
+/// their sum. That total is over the limit — the program then faults on a
+/// spilled slot rather than failing to link — so every handler is
+/// `#[inline(never)]` and owns its own frame.
 pub fn process_instruction(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -256,6 +261,7 @@ pub fn process_instruction(
     }
 }
 
+#[inline(never)]
 fn init_wallet(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let account_iter = &mut accounts.iter();
     let owner = next_account_info(account_iter)?;
@@ -307,6 +313,7 @@ fn init_wallet(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     Ok(())
 }
 
+#[inline(never)]
 fn init_strategy(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -375,6 +382,7 @@ fn init_strategy(
     Ok(())
 }
 
+#[inline(never)]
 fn set_limit(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -414,6 +422,7 @@ fn set_limit(
     Ok(())
 }
 
+#[inline(never)]
 fn rotate_session(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -447,6 +456,7 @@ fn rotate_session(
     Ok(())
 }
 
+#[inline(never)]
 fn revoke(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let account_iter = &mut accounts.iter();
     let authority = next_account_info(account_iter)?;
@@ -470,6 +480,7 @@ fn revoke(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn execute_swap_with_fees(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -1895,6 +1906,7 @@ fn load_remote_asset(remote_asset: &AccountInfo) -> Result<RemoteStrategyAsset, 
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn execute_relay_deposit(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -2120,6 +2132,7 @@ fn execute_relay_deposit(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn credit_relay_asset(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -2271,6 +2284,7 @@ fn credit_relay_asset(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn execute_remote_relay_sell(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -2477,6 +2491,7 @@ fn execute_remote_relay_sell(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn credit_usdc_return(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -2635,6 +2650,7 @@ fn credit_usdc_return(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn release_relay_deposit(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -2752,6 +2768,7 @@ fn release_relay_deposit(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn execute_relay_gas_top_up(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -2929,6 +2946,7 @@ fn execute_relay_gas_top_up(
     Ok(())
 }
 
+#[inline(never)]
 fn release_relay_gas_top_up(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -3003,6 +3021,7 @@ fn release_relay_gas_top_up(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn restore_remote_relay_asset(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -3143,6 +3162,7 @@ fn restore_remote_relay_asset(
     Ok(())
 }
 
+#[inline(never)]
 fn withdraw_asset(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> ProgramResult {
     if amount == 0 {
         return Err(StrategySpendError::InvalidInstruction.into());
@@ -3245,6 +3265,7 @@ fn withdraw_asset(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) ->
     Ok(())
 }
 
+#[inline(never)]
 fn close_strategy(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let account_iter = &mut accounts.iter();
     let owner = next_account_info(account_iter)?;
