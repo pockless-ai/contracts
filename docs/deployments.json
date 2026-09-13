@@ -71,12 +71,12 @@
       "chainId": 10,
       "rpc": "https://mainnet.optimism.io",
       "usdc": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
-      "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+      "implementation": "0x4d81Feb4c9D1E205014c3033e815A5C6Bf0b7aD7",
       "status": "deployed",
-      "txHash": "0x180e7fd5460a2ba6711cce0486c6fdc3dec336626b02db4dc0b3bc5b21888a70",
-      "codeHash": "0x4ec6f8998b181cd49c9ec7e29c37102a1bd239a1c4dc825eeb72929d1e578782",
-      "verifiedAt": "2026-09-13T15:17:47.874Z",
-      "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+      "txHash": "0xa0ffae07658617a9eb513ecd6cae7269d3c5a2890376cbbe533aa47a9398de95",
+      "codeHash": "0x0496e386d3125b79c05f3fd5ea1027da3761a42048726a60782a87a8d64a18f1",
+      "verifiedAt": "2026-09-13T17:51:37.276Z",
+      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -125,9 +125,19 @@
           "verifiedAt": "2026-09-12T18:32:12.021Z",
           "releaseCommit": "28b6b953a94324d60aa54adaa756d264d6c3df5f",
           "supersededAt": "2026-09-13T15:17:47.874Z"
+        },
+        {
+          "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+          "txHash": "0x180e7fd5460a2ba6711cce0486c6fdc3dec336626b02db4dc0b3bc5b21888a70",
+          "codeHash": "0x4ec6f8998b181cd49c9ec7e29c37102a1bd239a1c4dc825eeb72929d1e578782",
+          "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+          "verificationStatus": "verified",
+          "verifiedAt": "2026-09-13T15:17:47.874Z",
+          "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+          "supersededAt": "2026-09-13T17:51:37.276Z"
         }
       ],
-      "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+      "artifactHash": "b3de375bb7b60429712d36335f65324210218965406d4125591e3a2e36c2490a",
       "verificationStatus": "verified"
     },
     "56": {
@@ -136,12 +146,12 @@
       "chainId": 56,
       "rpc": "https://bsc-dataseed.bnbchain.org",
       "usdc": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
-      "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+      "implementation": "0x4d81Feb4c9D1E205014c3033e815A5C6Bf0b7aD7",
       "status": "deployed",
-      "txHash": "0x5382b168d81775864e7d56a79d4a75e95923d7384b14eefdd578421a5c6a2324",
-      "codeHash": "0xefa846f146bfcb377d7fe5dadfe3f886f03e26ba116d350fd19f92ac85b896ef",
-      "verifiedAt": "2026-09-13T15:17:48.763Z",
-      "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+      "txHash": "0x58df9ff9b600e68645260f3dbc2fd66367f13dc2430645124789ce49804985d7",
+      "codeHash": "0x13bcb4e55705f0ec162846ab86b3d584323270f866c7d00e4cd333e2b7c6bfc4",
+      "verifiedAt": "2026-09-13T17:51:33.525Z",
+      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -190,9 +200,19 @@
           "verifiedAt": "2026-09-12T18:22:31.801Z",
           "releaseCommit": "28b6b953a94324d60aa54adaa756d264d6c3df5f",
           "supersededAt": "2026-09-13T15:17:48.763Z"
+        },
+        {
+          "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+          "txHash": "0x5382b168d81775864e7d56a79d4a75e95923d7384b14eefdd578421a5c6a2324",
+          "codeHash": "0xefa846f146bfcb377d7fe5dadfe3f886f03e26ba116d350fd19f92ac85b896ef",
+          "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+          "verificationStatus": "verified",
+          "verifiedAt": "2026-09-13T15:17:48.763Z",
+          "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+          "supersededAt": "2026-09-13T17:51:33.525Z"
         }
       ],
-      "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+      "artifactHash": "b3de375bb7b60429712d36335f65324210218965406d4125591e3a2e36c2490a",
       "verificationStatus": "verified"
     },
     "137": {
@@ -201,11 +221,11 @@
       "chainId": 137,
       "rpc": "https://polygon-rpc.com",
       "usdc": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-      "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+      "implementation": "0x4d81Feb4c9D1E205014c3033e815A5C6Bf0b7aD7",
       "status": "deployed",
-      "txHash": "0x7481fbb7a3f1604550a3de1bc673265d58cdf86b64940b4fd3795bec3650cd71",
-      "codeHash": "0xb4728848c2e7d2f7b7a15d02b785c710e61232dda4141e4a5f4166c438815ce6",
-      "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+      "txHash": "0x8a04e703322c7ede68139fa1890ccaac41108b96367c47a6fa5aceb05be317c2",
+      "codeHash": "0x2979dba6959aa5db6779e5bad8e80ae79ab87c7faf6fe72ef04dea0643307f6d",
+      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -254,11 +274,21 @@
           "verifiedAt": "2026-09-12T18:23:04.852Z",
           "releaseCommit": "28b6b953a94324d60aa54adaa756d264d6c3df5f",
           "supersededAt": "2026-09-13T15:18:29.075Z"
+        },
+        {
+          "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+          "txHash": "0x7481fbb7a3f1604550a3de1bc673265d58cdf86b64940b4fd3795bec3650cd71",
+          "codeHash": "0xb4728848c2e7d2f7b7a15d02b785c710e61232dda4141e4a5f4166c438815ce6",
+          "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+          "verificationStatus": "verified",
+          "verifiedAt": "2026-09-13T15:18:29.075Z",
+          "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+          "supersededAt": "2026-09-13T17:52:09.437Z"
         }
       ],
-      "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+      "artifactHash": "b3de375bb7b60429712d36335f65324210218965406d4125591e3a2e36c2490a",
       "verificationStatus": "verified",
-      "verifiedAt": "2026-09-13T15:18:29.075Z"
+      "verifiedAt": "2026-09-13T17:52:09.437Z"
     },
     "8453": {
       "name": "base",
@@ -266,12 +296,12 @@
       "chainId": 8453,
       "rpc": "https://mainnet.base.org",
       "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-      "implementation": "0xBEe352AB43AF7d18674e12B4ebD35642c6e54e25",
+      "implementation": "0xCd615dB35C9A28C5f8F0A55D68D744f6baACEc9f",
       "status": "deployed",
-      "txHash": "0x0afa189d893aba4a826fe807b58cfaec71efaf7ac01dc983087366a1bcfe3f77",
-      "codeHash": "0xb94d201e092672290e1363951c11e2e88eb38e20d76e8c0610ad6c540b331a34",
-      "verifiedAt": "2026-09-13T15:17:49.276Z",
-      "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+      "txHash": "0x633aa37639410d7ea12ae9073d30d1ed6f5ee66b75493abcec35156ea436e0b8",
+      "codeHash": "0x8d90e1f085105888d1e75412128517251f60a67881e0d936498d13e07e798944",
+      "verifiedAt": "2026-09-13T17:51:35.477Z",
+      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
       "releases": [
         {
           "implementation": "0x739a8eF0A0f8aFb3909070e77D9963029C1D2508",
@@ -320,9 +350,19 @@
           "verifiedAt": "2026-09-12T18:23:01.461Z",
           "releaseCommit": "28b6b953a94324d60aa54adaa756d264d6c3df5f",
           "supersededAt": "2026-09-13T15:17:49.276Z"
+        },
+        {
+          "implementation": "0xBEe352AB43AF7d18674e12B4ebD35642c6e54e25",
+          "txHash": "0x0afa189d893aba4a826fe807b58cfaec71efaf7ac01dc983087366a1bcfe3f77",
+          "codeHash": "0xb94d201e092672290e1363951c11e2e88eb38e20d76e8c0610ad6c540b331a34",
+          "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+          "verificationStatus": "verified",
+          "verifiedAt": "2026-09-13T15:17:49.276Z",
+          "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+          "supersededAt": "2026-09-13T17:51:35.477Z"
         }
       ],
-      "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+      "artifactHash": "b3de375bb7b60429712d36335f65324210218965406d4125591e3a2e36c2490a",
       "verificationStatus": "verified"
     },
     "42161": {
@@ -331,12 +371,12 @@
       "chainId": 42161,
       "rpc": "https://arb1.arbitrum.io/rpc",
       "usdc": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
-      "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+      "implementation": "0x4d81Feb4c9D1E205014c3033e815A5C6Bf0b7aD7",
       "status": "deployed",
-      "txHash": "0xcbeccf7bb5d9f142e19f02fd2ad5a30c1e6fe3ecb5ed067de523d4baef4f1bf0",
-      "codeHash": "0x3de950d05f0246c4fbedaa9d3b8b50c164e18f175893005b95e838eb4510a295",
-      "verifiedAt": "2026-09-13T15:17:41.410Z",
-      "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+      "txHash": "0xec7fd1f59c70899ca823945d0a258a7b664f69e80d0cc7533ecd917796fb5bb5",
+      "codeHash": "0x070f927dc336ee84c0c161540703f823fb0adb0c19dfdd6182a9126143750951",
+      "verifiedAt": "2026-09-13T17:51:28.053Z",
+      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
       "releases": [
         {
           "implementation": "0x84b83EA4Dc0e5EE91b19997EebBa170573D97578",
@@ -385,9 +425,19 @@
           "verifiedAt": "2026-09-12T18:22:31.620Z",
           "releaseCommit": "28b6b953a94324d60aa54adaa756d264d6c3df5f",
           "supersededAt": "2026-09-13T15:17:41.410Z"
+        },
+        {
+          "implementation": "0x121e110297B9f135Fb266dd73dB1BEE2017008bC",
+          "txHash": "0xcbeccf7bb5d9f142e19f02fd2ad5a30c1e6fe3ecb5ed067de523d4baef4f1bf0",
+          "codeHash": "0x3de950d05f0246c4fbedaa9d3b8b50c164e18f175893005b95e838eb4510a295",
+          "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+          "verificationStatus": "verified",
+          "verifiedAt": "2026-09-13T15:17:41.410Z",
+          "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+          "supersededAt": "2026-09-13T17:51:28.053Z"
         }
       ],
-      "artifactHash": "e8e2ca82e0bd30618c6336ee039b422cd06f83991c665dc529b8e0bb3c05597d",
+      "artifactHash": "b3de375bb7b60429712d36335f65324210218965406d4125591e3a2e36c2490a",
       "verificationStatus": "verified"
     },
     "84532": {
@@ -468,7 +518,7 @@
       "status": "deployed",
       "programHash": "7e45f365ae7065c9436b2a39f6ef73c8fdd1ddedd0e18428ef090d1412bfac13",
       "verifiedAt": "2026-09-13T15:24:33.138Z",
-      "releaseCommit": "1fd34f85d08374d1de34754a8e5abfef90c58e99",
+      "releaseCommit": "923aafbd641774f6df24c36436061e9aa80d2556",
       "releases": [
         {
           "programId": "HDTbJM8xLj9LbWGxG7BqZqtACoKmwVmXvFLpCQBgLztU",
