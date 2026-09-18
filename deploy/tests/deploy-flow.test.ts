@@ -713,7 +713,7 @@ test("remaining targets deploy in parallel and keep going after one failure", as
   const manifestPath = join(directory, "testnet.json")
   const logs: string[] = []
   let started = 0
-  let release = () => undefined
+  let release: () => void = () => {}
   const bothStarted = new Promise<void>((resolve) => {
     release = resolve
   })
