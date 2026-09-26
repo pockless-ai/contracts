@@ -33,7 +33,6 @@ const PAIRS = [
 function configure() {
   configureTradeFees({
     feeBps: 50,
-    feeCapUsdc: "10.000000",
     gasFloorUsdc: "1.000000",
   })
   configureTradeLive({
